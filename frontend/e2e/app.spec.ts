@@ -33,6 +33,8 @@ test("workbench exposes official, discovery, and TapTap inputs", async ({ page }
   await page.getByPlaceholder("游戏、产品或事件名称").fill("失控进化");
   await page.getByPlaceholder("https://space.bilibili.com/3546785396034301").fill("https://space.bilibili.com/3546785396034301");
   await expect(page.getByRole("button", { name: "开始分析" })).toBeEnabled();
+  const dimensions = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.innerWidth + 1);
 });
 
 test("Bilibili login is rendered in an interactive page subwindow", async ({ page }, testInfo) => {
