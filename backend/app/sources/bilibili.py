@@ -197,6 +197,8 @@ class BilibiliVisibleSource:
         include_discovery: bool = True,
         persist: PersistCallback | None = None,
         resume_comment_counts: dict[str, int] | None = None,
+        official_phase_complete: bool = False,
+        existing_official_ids: set[str] | None = None,
     ) -> CollectionResult:
         resumed_counts = resume_comment_counts or {}
         running, authenticated = await self.manager.session_state("bilibili")
@@ -206,9 +208,9 @@ class BilibiliVisibleSource:
         page = await context.new_page()
         keep_page = False
         combined = CollectionResult(metrics={"bilibili": {}})
-        official_ids: set[str] = set()
+        official_ids = set(existing_official_ids or ())
         try:
-            if official_mid:
+            if official_mid and not official_phase_complete:
                 official = await self._collect_official(
                     page,
                     official_mid,
@@ -225,6 +227,19 @@ class BilibiliVisibleSource:
                 combined.warnings.extend(official.warnings)
                 combined.metrics["bilibili"]["official"] = official.metrics.get("official", {})
                 official_ids = {video.external_id for video in official.videos}
+                if persist:
+                    await persist(
+                        CollectionResult(
+                            official_account=official.official_account,
+                            metrics={
+                                "bilibili": {
+                                    "official": official.metrics.get("official", {})
+                                },
+                                "official_phase_complete": True,
+                            },
+                            warnings=official.warnings,
+                        )
+                    )
 
             if include_discovery and not await is_cancelled():
                 discovery = await self._collect_discovery(
