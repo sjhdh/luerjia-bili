@@ -121,13 +121,18 @@ systemctl daemon-reload
 systemctl enable --now autobili.service
 
 install -d -o root -g root -m 0755 /var/www/autobili-acme/.well-known/acme-challenge
+NGINX_TEMPLATE="${APP_DIR}/deploy/nginx-autobili.conf"
+if [[ -s "/etc/letsencrypt/live/autobili.luerjia.art/fullchain.pem" \
+  && -s "/etc/letsencrypt/live/autobili.luerjia.art/privkey.pem" ]]; then
+  NGINX_TEMPLATE="${APP_DIR}/deploy/nginx-autobili-ssl.conf"
+fi
 if [[ -d /www/server/panel/vhost/nginx ]]; then
-  install -o root -g root -m 0600 "${APP_DIR}/deploy/nginx-autobili.conf" \
+  install -o root -g root -m 0600 "${NGINX_TEMPLATE}" \
     /www/server/panel/vhost/nginx/autobili.luerjia.art.conf
   nginx -t
   /etc/rc.d/init.d/nginx reload
 elif [[ -d /etc/nginx/sites-available && -d /etc/nginx/sites-enabled ]]; then
-  install -o root -g root -m 0644 "${APP_DIR}/deploy/nginx-autobili.conf" \
+  install -o root -g root -m 0644 "${NGINX_TEMPLATE}" \
     /etc/nginx/sites-available/autobili.conf
   ln -sfn /etc/nginx/sites-available/autobili.conf /etc/nginx/sites-enabled/autobili.conf
   nginx -t
