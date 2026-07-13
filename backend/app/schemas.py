@@ -102,6 +102,57 @@ class BrowserInput(BaseModel):
     text: str | None = Field(default=None, max_length=500)
 
 
+class ProxySettingsUpdate(BaseModel):
+    mode: Literal["direct", "manual", "auto"]
+    protocol: Literal["http", "https", "socks4", "socks5"] = "https"
+    country_code: str = Field(default="CN", max_length=2)
+    pool_size: int = Field(default=5, ge=1, le=20)
+    manual_proxy: str = Field(default="", max_length=300)
+
+    @field_validator("country_code")
+    @classmethod
+    def normalize_country_code(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized and (len(normalized) != 2 or not normalized.isalpha()):
+            raise ValueError("国家代码应为两个字母，例如 CN")
+        return normalized
+
+    @model_validator(mode="after")
+    def require_manual_proxy(self) -> ProxySettingsUpdate:
+        if self.mode == "manual" and not self.manual_proxy.strip():
+            raise ValueError("手动代理模式需要填写代理地址")
+        return self
+
+
+class ProxyTestRequest(BaseModel):
+    proxy: str | None = Field(default=None, max_length=300)
+    protocol: Literal["http", "https", "socks4", "socks5"] | None = None
+
+
+class ProxySettingsRead(BaseModel):
+    mode: Literal["direct", "manual", "auto"]
+    protocol: Literal["http", "https", "socks4", "socks5"]
+    country_code: str
+    pool_size: int
+    manual_proxy: str
+    active_proxy: str | None
+    active_source: Literal["direct", "manual", "pool"]
+    exit_ip: str | None
+    latency_ms: int | None
+    last_checked_at: str | None
+    last_error: str | None
+    pool_api: str
+
+
+class ProxyCheckRead(BaseModel):
+    proxy: str
+    reachable: bool
+    latency_ms: int | None
+    exit_ip: str | None
+    message: str
+    checked_at: str
+
+
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=1, max_length=300)

@@ -9,6 +9,7 @@ from typing import Literal
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 
 from ..config import Settings
+from ..services.proxy import ProxyCheck, ProxyManager, ProxyMode, ProxyProtocol
 
 PlatformName = Literal["bilibili", "taptap"]
 LOGIN_URLS: dict[PlatformName, str] = {
@@ -30,6 +31,7 @@ class BilibiliBrowserManager:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.proxy = ProxyManager(settings)
         self._playwright: Playwright | None = None
         self._start_lock = asyncio.Lock()
         self._sessions: dict[PlatformName, PlatformBrowser] = {
@@ -63,6 +65,7 @@ class BilibiliBrowserManager:
         async with session.lock:
             if session.context is None:
                 runtime = await self._runtime()
+                proxy_server = await self.proxy.ensure_active()
                 profile = self._profile_dir(platform)
                 profile.mkdir(parents=True, exist_ok=True)
                 launch_args = (
@@ -78,6 +81,7 @@ class BilibiliBrowserManager:
                     viewport={"width": 1440, "height": 900},
                     locale="zh-CN",
                     args=launch_args,
+                    proxy={"server": proxy_server} if proxy_server else None,
                 )
             context = session.context
         if open_login:
@@ -257,6 +261,40 @@ class BilibiliBrowserManager:
             if self._playwright is not None:
                 await self._playwright.stop()
                 self._playwright = None
+
+    def proxy_state(self) -> dict[str, object]:
+        return self.proxy.state()
+
+    async def configure_proxy(
+        self,
+        *,
+        mode: ProxyMode,
+        protocol: ProxyProtocol,
+        country_code: str,
+        pool_size: int,
+        manual_proxy: str,
+    ) -> dict[str, object]:
+        state = await self.proxy.configure(
+            mode=mode,
+            protocol=protocol,
+            country_code=country_code,
+            pool_size=pool_size,
+            manual_proxy=manual_proxy,
+        )
+        for platform in ("bilibili", "taptap"):
+            await self.close_platform(platform)
+        return state
+
+    async def rotate_proxy(self) -> dict[str, object]:
+        state = await self.proxy.rotate()
+        for platform in ("bilibili", "taptap"):
+            await self.close_platform(platform)
+        return state
+
+    async def test_proxy(
+        self, value: str | None = None, protocol: ProxyProtocol | None = None
+    ) -> ProxyCheck:
+        return await self.proxy.test(value, protocol)
 
     async def clear_profile(self, platform: PlatformName = "bilibili") -> None:
         await self.close_platform(platform)
