@@ -23,11 +23,11 @@ export const demoReport: ReportPayload = {
     { id: 3, name: "优化 / 掉帧 / 发热", keywords: ["优化", "掉帧", "发热"], size: 98, negative_ratio: 61, risk_score: 5.9, samples: ["移动端发热"] }
   ],
   samples: {
-    positive: [{ id: 1, platform: "taptap", kind: "review", author: "匿名用户 #A120", text: "建造手感很好，玩法深度足，和队友一起开荒很有意思。", rating: 5, likes: 82, confidence: 1 }],
-    neutral: [{ id: 2, platform: "bilibili", kind: "comment", author: "匿名用户 #B233", text: "玩法不错，但移动端优化还需要继续做，希望后续稳定一些。", rating: null, likes: 34, confidence: 0.78 }],
-    negative: [{ id: 3, platform: "bilibili", kind: "comment", author: "匿名用户 #C711", text: "非法组队举报后没有反馈，掉帧和发热也很明显。", rating: null, likes: 126, confidence: 0.93 }]
+    positive: [{ id: 1, platform: "taptap", kind: "review", source_scope: "taptap", author: "匿名用户 #A120", text: "建造手感很好，玩法深度足，和队友一起开荒很有意思。", rating: 5, likes: 82, confidence: 1 }],
+    neutral: [{ id: 2, platform: "bilibili", kind: "comment", source_scope: "bilibili_discovery", author: "匿名用户 #B233", text: "玩法不错，但移动端优化还需要继续做，希望后续稳定一些。", rating: null, likes: 34, confidence: 0.78 }],
+    negative: [{ id: 3, platform: "bilibili", kind: "comment", source_scope: "bilibili_discovery", author: "匿名用户 #C711", text: "非法组队举报后没有反馈，掉帧和发热也很明显。", rating: null, likes: 126, confidence: 0.93 }]
   },
-  videos: Array.from({ length: 10 }, (_, index) => ({ id: `BVTEST${index}`, title: `失控进化重点视频 ${index + 1}：实机体验与版本评价`, url: "https://www.bilibili.com", cover_url: null, creator: `UP主 ${index + 1}`, views: 373000 - index * 17000, likes: 28000 - index * 900, coins: 5000 - index * 120, favorites: 8200 - index * 210, replies: 2400 - index * 80, danmakus: 6200 - index * 130, selection_score: 0.91 - index * 0.05, selected: true, score_components: {} })),
+  videos: Array.from({ length: 10 }, (_, index) => ({ id: `BVTEST${index}`, title: `失控进化重点视频 ${index + 1}：实机体验与版本评价`, url: "https://www.bilibili.com", cover_url: null, creator: `UP主 ${index + 1}`, published_at: `2026-07-${String(index + 1).padStart(2, "0")}T00:00:00Z`, views: 373000 - index * 17000, likes: 28000 - index * 900, coins: 5000 - index * 120, favorites: 8200 - index * 210, replies: 2400 - index * 80, danmakus: 6200 - index * 130, selection_score: 0.91 - index * 0.05, selected: true, source_scope: "bilibili_discovery", score_components: {} })),
   source_app: { id: "733908", title: "失控进化", url: "https://www.taptap.cn/app/733908", score: 8.4, rating_count: 11000 },
   model_quality: { sample_size: 200, accuracy: 0.835, macro_f1: 0.812, confusion: [[120, 10, 9], [4, 9, 4], [2, 4, 38]], model: "lxyuan/distilbert-base-multilingual-cased-sentiments-student", revision: "cf991100d706c13c0a080c097134c05b7f436c45" },
   summary: { overview: "整体口碑中上但存在明显两极分化，正面认可集中在玩法深度与建造体验。", positives: ["玩法深度", "建造体验", "公平感"], risks: ["非法组队与举报", "外挂", "移动端优化"], recommendations: ["优先改进举报反馈", "持续治理外挂", "优化移动端性能"] },

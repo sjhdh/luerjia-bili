@@ -15,7 +15,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, silhouette_score
 
 from ..config import Settings
-from ..models import ContentItem, Job, SourceApp, Video
+from ..models import ContentItem, Job, OfficialAccount, SourceApp, Video
 from .privacy import sanitize_text
 
 SENTIMENTS = ("positive", "neutral", "negative")
@@ -111,6 +111,7 @@ def _distribution(items: list[ContentItem]) -> dict[str, Any]:
     total = sum(counts.values())
     return {
         "total": total,
+        "available": total > 0,
         "items": [
             {
                 "name": key,
@@ -139,7 +140,12 @@ def _blend_bilibili(comments: dict[str, Any], danmakus: dict[str, Any]) -> dict[
                 "percentage": round(percentage, 1),
             }
         )
-    return {"total": comments["total"] + danmakus["total"], "items": items, "weighted": True}
+    return {
+        "total": comments["total"] + danmakus["total"],
+        "available": True,
+        "items": items,
+        "weighted": True,
+    }
 
 
 def _extract_keywords(items: list[ContentItem], limit: int = 25) -> list[dict[str, Any]]:
@@ -303,6 +309,13 @@ async def _enhance_summary(
 
 
 def _local_summary(keyword: str, overall: dict[str, Any], topics: list[dict[str, Any]]) -> dict[str, Any]:
+    if not overall["total"]:
+        return {
+            "overview": f"“{keyword}”当前来源没有足够样本，未计算情感比例。",
+            "positives": [],
+            "risks": ["样本不足，结论不可用"],
+            "recommendations": ["检查登录状态、来源地址与采集完整度后重试"],
+        }
     percentages = {item["name"]: item["percentage"] for item in overall["items"]}
     risks = [topic["name"] for topic in topics[:3] if topic["negative_ratio"] >= 35]
     positives = [topic["name"] for topic in reversed(topics) if topic["negative_ratio"] < 35][:3]
@@ -324,6 +337,7 @@ async def analyze_job(
     videos: list[Video],
     apps: list[SourceApp],
     items: list[ContentItem],
+    official_account: OfficialAccount | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     engine = SentimentEngine(settings)
     predictions = await engine.predict([item.text for item in items])
@@ -336,24 +350,57 @@ async def analyze_job(
         item.sentiment = sentiment
         item.confidence = confidence
 
-    comments = [item for item in items if item.platform == "bilibili" and item.kind == "comment"]
-    danmakus = [item for item in items if item.platform == "bilibili" and item.kind == "danmaku"]
+    comments = [
+        item for item in items if item.platform == "bilibili" and item.kind == "comment"
+    ]
+    danmakus = [
+        item for item in items if item.platform == "bilibili" and item.kind == "danmaku"
+    ]
     reviews = [item for item in items if item.platform == "taptap"]
-    bili_distribution = _blend_bilibili(_distribution(comments), _distribution(danmakus))
+    official_items = [item for item in items if item.source_scope == "bilibili_official"]
+    discovery_items = [item for item in items if item.source_scope == "bilibili_discovery"]
+    taptap_items = [item for item in items if item.source_scope == "taptap"]
+    official_videos = [video for video in videos if video.source_scope == "bilibili_official"]
+    discovery_videos = [video for video in videos if video.source_scope == "bilibili_discovery"]
+
+    def bili_section_distribution(section_items: list[ContentItem]) -> dict[str, Any]:
+        return _blend_bilibili(
+            _distribution([item for item in section_items if item.kind == "comment"]),
+            _distribution([item for item in section_items if item.kind == "danmaku"]),
+        )
+
+    official_distribution = bili_section_distribution(official_items)
+    discovery_distribution = bili_section_distribution(discovery_items)
+    bili_overall_distribution = _blend_bilibili(
+        _distribution(comments), _distribution(danmakus)
+    )
     taptap_distribution = _distribution(reviews)
-    available = [entry for entry in (bili_distribution, taptap_distribution) if entry["total"]]
+    available = [
+        entry
+        for entry in (bili_overall_distribution, taptap_distribution)
+        if entry["total"]
+    ]
     overall_items = []
     for index, key in enumerate(SENTIMENTS):
         percentage = sum(entry["items"][index]["percentage"] for entry in available) / max(1, len(available))
         overall_items.append(
             {"name": key, "label": SENTIMENT_CN[key], "percentage": round(percentage, 1), "count": sum(entry["items"][index]["count"] for entry in available)}
         )
-    overall = {"total": sum(entry["total"] for entry in available), "items": overall_items, "platform_equal_weight": True}
+    overall = {
+        "total": sum(entry["total"] for entry in available),
+        "available": bool(available),
+        "items": overall_items,
+        "platform_equal_weight": True,
+    }
     keywords = _extract_keywords(items)
     topics = _extract_topics(items)
     metrics = {
         "video_count": len(videos),
         "selected_video_count": sum(bool(video.selected) for video in videos),
+        "official_video_count": len(official_videos),
+        "discovery_video_count": len(discovery_videos),
+        "official_comment_count": sum(item.kind == "comment" for item in official_items),
+        "discovery_comment_count": sum(item.kind == "comment" for item in discovery_items),
         "comment_count": len(comments),
         "danmaku_count": len(danmakus),
         "review_count": len(reviews),
@@ -389,6 +436,7 @@ async def analyze_job(
                 "id": item.id,
                 "platform": item.platform,
                 "kind": item.kind,
+                "source_scope": item.source_scope,
                 "author": item.author_hash,
                 "text": item.text[:900],
                 "rating": item.rating,
@@ -398,17 +446,168 @@ async def analyze_job(
             for item in candidates[:5]
         ]
 
-    selected_videos = sorted(videos, key=lambda video: video.selection_score, reverse=True)
-    cover_url = apps[0].cover_url if apps and apps[0].cover_url else next((video.cover_url for video in selected_videos if video.cover_url), None)
+    selected_videos = sorted(
+        videos,
+        key=lambda video: (
+            video.source_scope == "bilibili_official",
+            video.published_at or datetime.min.replace(tzinfo=timezone.utc),
+            video.selection_score,
+        ),
+        reverse=True,
+    )
+    cover_url = (
+        apps[0].cover_url
+        if apps and apps[0].cover_url
+        else official_account.avatar_url
+        if official_account and official_account.avatar_url
+        else next((video.cover_url for video in selected_videos if video.cover_url), None)
+    )
+
+    def section_samples(section_items: list[ContentItem]) -> dict[str, list[dict[str, Any]]]:
+        result: dict[str, list[dict[str, Any]]] = {}
+        for sentiment in SENTIMENTS:
+            candidates = [item for item in section_items if item.sentiment == sentiment]
+            candidates.sort(
+                key=lambda item: (item.confidence or 0) + math.log1p(item.likes) * 0.05,
+                reverse=True,
+            )
+            result[sentiment] = [
+                {
+                    "id": item.id,
+                    "platform": item.platform,
+                    "kind": item.kind,
+                    "source_scope": item.source_scope,
+                    "author": item.author_hash,
+                    "text": item.text[:900],
+                    "rating": item.rating,
+                    "likes": item.likes,
+                    "confidence": item.confidence,
+                    "reply_depth": item.reply_depth or 0,
+                }
+                for item in candidates[:5]
+            ]
+        return result
+
+    def video_rows(section_videos: list[Video]) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": video.external_id,
+                "title": video.title,
+                "url": video.url,
+                "cover_url": video.cover_url,
+                "creator": video.creator,
+                "published_at": video.published_at.isoformat() if video.published_at else None,
+                "views": video.views,
+                "likes": video.likes,
+                "coins": video.coins,
+                "favorites": video.favorites,
+                "replies": video.replies,
+                "danmakus": video.danmakus,
+                "selection_score": round(video.selection_score, 4),
+                "selected": video.selected,
+                "source_scope": video.source_scope,
+                "score_components": (video.raw_meta or {}).get("score_components", {}),
+            }
+            for video in section_videos
+        ]
+
+    def section_payload(
+        key: str,
+        label: str,
+        section_items: list[ContentItem],
+        distribution: dict[str, Any],
+        section_videos: list[Video] | None = None,
+    ) -> dict[str, Any]:
+        section_topics = _extract_topics(section_items)
+        return {
+            "key": key,
+            "label": label,
+            "available": bool(section_items),
+            "metrics": {
+                "sample_count": len(section_items),
+                "comment_count": sum(item.kind == "comment" for item in section_items),
+                "nested_reply_count": sum((item.reply_depth or 0) > 0 for item in section_items),
+                "danmaku_count": sum(item.kind == "danmaku" for item in section_items),
+                "review_count": sum(item.kind == "review" for item in section_items),
+                "video_count": len(section_videos or []),
+            },
+            "sentiment": distribution,
+            "timeline": _timeline(section_items),
+            "keywords": _extract_keywords(section_items),
+            "topics": section_topics,
+            "samples": section_samples(section_items),
+            "videos": video_rows(section_videos or []),
+            "summary": _local_summary(f"{job.keyword} · {label}", distribution, section_topics),
+        }
+
+    sections = {
+        "bilibili_official": section_payload(
+            "bilibili_official",
+            "B站官号",
+            official_items,
+            official_distribution,
+            official_videos,
+        ),
+        "bilibili_discovery": section_payload(
+            "bilibili_discovery",
+            "B站相关视频",
+            discovery_items,
+            discovery_distribution,
+            discovery_videos,
+        ),
+        "taptap": section_payload(
+            "taptap",
+            "TapTap 玩家评价",
+            taptap_items,
+            taptap_distribution,
+        ),
+    }
+    sections["taptap"].update(
+        {
+            "rating_distribution": [
+                {
+                    "star": star,
+                    "count": rating_counts[star],
+                    "percentage": round(rating_counts[star] / rating_total * 100, 1)
+                    if rating_total
+                    else 0,
+                }
+                for star in range(5, 0, -1)
+            ],
+            "tags": (apps[0].tags or []) if apps else [],
+        }
+    )
+
+    requested = {
+        "bilibili_official": bool(job.official_mid),
+        "bilibili_discovery": bool(job.include_discovery),
+        "taptap": bool(job.include_taptap),
+    }
+    source_available = {key: bool(value["available"]) for key, value in sections.items()}
+    empty_sources = [
+        key for key, was_requested in requested.items() if was_requested and not source_available[key]
+    ]
+    if empty_sources:
+        warnings.append("以下来源没有有效样本：" + "、".join(empty_sources))
     payload = {
         "id": job.id,
         "keyword": job.keyword,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "partial": bool(job.partial),
         "warnings": list(dict.fromkeys((job.warnings or []) + warnings)),
-        "hero": {"cover_url": cover_url, "subtitle": "B站视频评论、可见弹幕与 TapTap 玩家评价联合分析"},
+        "hero": {
+            "cover_url": cover_url,
+            "subtitle": "B站官号、相关视频与 TapTap 玩家评价分区联合分析",
+        },
         "metrics": metrics,
-        "sentiment": {"overall": overall, "bilibili": bili_distribution, "taptap": taptap_distribution},
+        "sentiment": {
+            "overall": overall,
+            "bilibili": bili_overall_distribution,
+            "bilibili_official": official_distribution,
+            "bilibili_discovery": discovery_distribution,
+            "taptap": taptap_distribution,
+        },
+        "sections": sections,
         "rating_distribution": [
             {"star": star, "count": rating_counts[star], "percentage": round(rating_counts[star] / rating_total * 100, 1) if rating_total else 0}
             for star in range(5, 0, -1)
@@ -418,25 +617,17 @@ async def analyze_job(
         "tags": (apps[0].tags or []) if apps else [],
         "topics": topics,
         "samples": samples,
-        "videos": [
-            {
-                "id": video.external_id,
-                "title": video.title,
-                "url": video.url,
-                "cover_url": video.cover_url,
-                "creator": video.creator,
-                "views": video.views,
-                "likes": video.likes,
-                "coins": video.coins,
-                "favorites": video.favorites,
-                "replies": video.replies,
-                "danmakus": video.danmakus,
-                "selection_score": round(video.selection_score, 4),
-                "selected": video.selected,
-                "score_components": (video.raw_meta or {}).get("score_components", {}),
-            }
-            for video in selected_videos
-        ],
+        "videos": video_rows(selected_videos),
+        "official_account": {
+            "mid": official_account.mid,
+            "title": official_account.title,
+            "url": official_account.url,
+            "avatar_url": official_account.avatar_url,
+            "expected_video_count": official_account.expected_video_count,
+            "collected_video_count": official_account.collected_video_count,
+        }
+        if official_account
+        else None,
         "source_app": {
             "id": apps[0].external_id,
             "title": apps[0].title,
@@ -446,7 +637,17 @@ async def analyze_job(
         } if apps else None,
         "model_quality": {**quality, "model": settings.local_model_id, "revision": settings.local_model_revision},
         "summary": summary,
+        "data_quality": {
+            "valid": bool(items) and not empty_sources and not job.partial,
+            "sample_count": len(items),
+            "requested_sources": requested,
+            "available_sources": source_available,
+            "empty_sources": empty_sources,
+            "collection": job.collection_metrics or {},
+        },
         "methodology": {
+            "bilibili_official": "官号时间范围内视频穷尽分页；顶层评论与楼中楼完整性逐视频核对",
+            "bilibili_discovery": "关键词相关视频按互动权重采样；与官号 BVID 去重后分析",
             "bilibili": "登录用户可见网页低频采集；评论 80%、可见弹幕 20% 加权",
             "taptap": "公开网页评价；4-5星正面、3星中性、1-2星负面",
             "combined": "平台等权平均；不使用隐藏 API，不绕过验证码或风控",

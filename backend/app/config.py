@@ -26,9 +26,11 @@ class Settings(BaseSettings):
     trusted_hosts: str = "127.0.0.1,localhost,testserver"
     admin_username: str = "operator"
     admin_password: SecretStr | None = Field(default=None, repr=False)
+    session_secret: SecretStr | None = Field(default=None, repr=False)
+    session_ttl_hours: int = 12
     data_dir: Path = ROOT_DIR / "data"
     database_url: str | None = None
-    browser_headless: bool = False
+    browser_headless: bool = True
     browser_executable_path: str | None = None
     browser_slow_mo_ms: int = 0
     qr_login_ttl_seconds: int = 180
@@ -59,6 +61,10 @@ class Settings(BaseSettings):
         return self.data_dir / "browser-profile"
 
     @property
+    def taptap_browser_profile_dir(self) -> Path:
+        return self.data_dir / "taptap-browser-profile"
+
+    @property
     def exports_dir(self) -> Path:
         return self.data_dir / "exports"
 
@@ -69,6 +75,12 @@ class Settings(BaseSettings):
     @property
     def admin_password_value(self) -> str:
         return self.admin_password.get_secret_value() if self.admin_password else ""
+
+    @property
+    def session_secret_value(self) -> str:
+        if self.session_secret:
+            return self.session_secret.get_secret_value()
+        return self.admin_password_value or "local-development-session"
 
     @property
     def allowed_hosts(self) -> list[str]:

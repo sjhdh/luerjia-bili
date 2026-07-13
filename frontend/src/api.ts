@@ -1,4 +1,4 @@
-import type { BrowserSession, Job, ReportPayload } from "./types";
+import type { AuthSession, BrowserSession, Job, ReportPayload, ShareLink } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -9,10 +9,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const payload = await response.json().catch(() => ({ detail: response.statusText }));
     throw new Error(payload.detail || "请求失败");
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
 export const api = {
+  authSession: () => request<AuthSession>("/api/v1/auth/session"),
+  login: (username: string, password: string) =>
+    request<AuthSession>("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password })
+    }),
+  logout: () => request<AuthSession>("/api/v1/auth/logout", { method: "POST" }),
   jobs: () => request<Job[]>("/api/v1/jobs"),
   job: (id: string) => request<Job>(`/api/v1/jobs/${id}`),
   createJob: (payload: Record<string, unknown>) =>
@@ -25,12 +33,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ app_id: appId })
     }),
-  session: () => request<BrowserSession>("/api/v1/bilibili/session"),
-  connect: (method: BrowserSession["login_method"]) =>
-    request<BrowserSession>(
-      method === "qr" ? "/api/v1/bilibili/qr-login" : "/api/v1/bilibili/login-window",
-      { method: "POST" }
-    ),
-  disconnect: () => request<BrowserSession>("/api/v1/bilibili/session", { method: "DELETE" }),
-  report: (id: string) => request<ReportPayload>(`/api/v1/reports/${id}`)
+  platformSession: (platform: BrowserSession["platform"]) =>
+    request<BrowserSession>(`/api/v1/platforms/${platform}/session`),
+  openWorkspace: (platform: BrowserSession["platform"]) =>
+    request<BrowserSession>(`/api/v1/platforms/${platform}/workspace`, { method: "POST" }),
+  disconnectPlatform: (platform: BrowserSession["platform"]) =>
+    request<BrowserSession>(`/api/v1/platforms/${platform}/session`, { method: "DELETE" }),
+  browserInput: (platform: BrowserSession["platform"], payload: Record<string, unknown>) =>
+    request<BrowserSession>(`/api/v1/platforms/${platform}/input`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  report: (id: string) => request<ReportPayload>(`/api/v1/reports/${id}`),
+  sharedReport: (token: string) => request<ReportPayload>(`/api/v1/shared/reports/${token}`),
+  createShare: (id: string, expiresInDays = 7) =>
+    request<ShareLink>(`/api/v1/reports/${id}/shares`, {
+      method: "POST",
+      body: JSON.stringify({ expires_in_days: expiresInDays })
+    })
 };

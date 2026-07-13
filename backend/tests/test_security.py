@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 
 import pytest
@@ -9,40 +8,50 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from backend.app.config import Settings
-from backend.app.security import SharedAccessMiddleware, basic_authorization_is_valid
+from backend.app.security import (
+    SESSION_COOKIE,
+    LoginThrottle,
+    SessionAccessMiddleware,
+    SessionSigner,
+)
 
 
-def authorization(username: str, password: str) -> bytes:
-    encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
-    return f"Basic {encoded}".encode()
+def test_session_signer_rejects_tampering_and_expiry() -> None:
+    signer = SessionSigner("secret", ttl_seconds=60)
+    token = signer.issue("operator", now=100)
+    assert signer.verify(token, now=120) == "operator"
+    assert signer.verify(token + "x", now=120) is None
+    assert signer.verify(token, now=160) is None
 
 
-def test_shared_access_credentials_use_exact_constant_time_comparison() -> None:
-    assert basic_authorization_is_valid(authorization("operator", "secret"), "operator", "secret")
-    assert not basic_authorization_is_valid(
-        authorization("operator", "wrong"), "operator", "secret"
-    )
-    assert not basic_authorization_is_valid(b"Bearer token", "operator", "secret")
-    assert not basic_authorization_is_valid(b"Basic malformed", "operator", "secret")
-
-
-def test_shared_access_middleware_challenges_and_accepts_browser_auth() -> None:
+def test_session_middleware_returns_json_without_basic_auth_challenge() -> None:
     protected = FastAPI()
+    signer = SessionSigner("secret")
 
-    @protected.get("/")
-    async def index() -> dict[str, bool]:
+    @protected.get("/api/private")
+    async def private() -> dict[str, bool]:
         return {"ok": True}
 
     protected.add_middleware(
-        SharedAccessMiddleware,
-        username="operator",
-        password="secret",
+        SessionAccessMiddleware,
+        signer=signer,
+        allowed_origins={"http://testserver"},
     )
     client = TestClient(protected)
-    denied = client.get("/")
+    denied = client.get("/api/private")
     assert denied.status_code == 401
-    assert denied.headers["www-authenticate"].startswith("Basic")
-    assert client.get("/", auth=("operator", "secret")).json() == {"ok": True}
+    assert "www-authenticate" not in denied.headers
+    client.cookies.set(SESSION_COOKIE, signer.issue("operator"))
+    assert client.get("/api/private").json() == {"ok": True}
+
+
+def test_login_throttle_limits_repeated_failures() -> None:
+    throttle = LoginThrottle(max_attempts=2, window_seconds=60)
+    throttle.fail("client", now=10)
+    assert not throttle.is_blocked("client", now=11)
+    throttle.fail("client", now=12)
+    assert throttle.is_blocked("client", now=13)
+    assert not throttle.is_blocked("client", now=80)
 
 
 def test_server_mode_refuses_to_start_without_access_password(tmp_path: Path) -> None:

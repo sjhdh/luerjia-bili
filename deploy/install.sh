@@ -85,6 +85,17 @@ if [[ "$(uname -s)" == "Linux" ]]; then
 fi
 "${APP_DIR}/.venv/bin/python" -m pip install --index-url "${PIP_INDEX_URL}" "${APP_DIR}"
 
+MIGRATION_DATA_DIR="$(awk -F= '$1 == "DATA_DIR" { sub(/^[^=]*=/, ""); print; exit }' "${ENV_FILE}")"
+MIGRATION_DATABASE_URL="$(awk -F= '$1 == "DATABASE_URL" { sub(/^[^=]*=/, ""); print; exit }' "${ENV_FILE}")"
+MIGRATION_DATA_DIR="${MIGRATION_DATA_DIR:-${STATE_DIR}/data}"
+if [[ -n "${MIGRATION_DATABASE_URL}" ]]; then
+  runuser -u "${SERVICE_USER}" -- env DATA_DIR="${MIGRATION_DATA_DIR}" DATABASE_URL="${MIGRATION_DATABASE_URL}" \
+    "${APP_DIR}/.venv/bin/python" -m alembic upgrade head
+else
+  runuser -u "${SERVICE_USER}" -- env DATA_DIR="${MIGRATION_DATA_DIR}" \
+    "${APP_DIR}/.venv/bin/python" -m alembic upgrade head
+fi
+
 if command -v apt-get >/dev/null 2>&1; then
   "${APP_DIR}/.venv/bin/python" -m playwright install-deps chromium
 elif command -v dnf >/dev/null 2>&1; then

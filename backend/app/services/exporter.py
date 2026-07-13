@@ -3,9 +3,10 @@ from __future__ import annotations
 import csv
 import io
 
-from playwright.async_api import HttpCredentials, async_playwright
+from playwright.async_api import async_playwright
 
 from ..models import ContentItem
+from ..security import SESSION_COOKIE
 
 
 def build_csv(items: list[ContentItem]) -> bytes:
@@ -34,7 +35,7 @@ def build_csv(items: list[ContentItem]) -> bytes:
 async def build_pdf(
     report_id: str,
     base_url: str,
-    http_credentials: HttpCredentials | None = None,
+    session_cookie: str | None = None,
     executable_path: str | None = None,
 ) -> bytes:
     async with async_playwright() as playwright:
@@ -42,10 +43,12 @@ async def build_pdf(
             headless=True,
             executable_path=executable_path,
         )
-        page = await browser.new_page(
-            viewport={"width": 1440, "height": 900},
-            http_credentials=http_credentials,
-        )
+        context = await browser.new_context(viewport={"width": 1440, "height": 900})
+        if session_cookie:
+            await context.add_cookies(
+                [{"name": SESSION_COOKIE, "value": session_cookie, "url": base_url.rstrip("/")}]
+            )
+        page = await context.new_page()
         try:
             response = await page.goto(
                 f"{base_url.rstrip('/')}/reports/{report_id}?print=1",
@@ -65,4 +68,5 @@ async def build_pdf(
                 margin={"top": "12mm", "right": "10mm", "bottom": "12mm", "left": "10mm"},
             )
         finally:
+            await context.close()
             await browser.close()

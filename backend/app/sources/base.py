@@ -24,6 +24,8 @@ class CollectedVideo:
     replies: int = 0
     danmakus: int = 0
     description: str = ""
+    source_scope: str = "bilibili_discovery"
+    official_mid: str | None = None
     raw_meta: dict[str, Any] = field(default_factory=dict)
 
 
@@ -35,6 +37,9 @@ class CollectedContent:
     text: str
     author: str | None = None
     video_external_id: str | None = None
+    source_scope: str = "bilibili_discovery"
+    parent_external_id: str | None = None
+    reply_depth: int = 0
     rating: int | None = None
     likes: int = 0
     published_at: datetime | None = None
@@ -50,6 +55,18 @@ class CollectedApp:
     score: float | None = None
     rating_count: int = 0
     tags: list[dict[str, Any]] = field(default_factory=list)
+    source_scope: str = "taptap"
+    raw_meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class CollectedOfficialAccount:
+    mid: str
+    title: str
+    url: str
+    avatar_url: str | None = None
+    expected_video_count: int | None = None
+    collected_video_count: int = 0
     raw_meta: dict[str, Any] = field(default_factory=dict)
 
 
@@ -58,6 +75,8 @@ class CollectionResult:
     videos: list[CollectedVideo] = field(default_factory=list)
     contents: list[CollectedContent] = field(default_factory=list)
     apps: list[CollectedApp] = field(default_factory=list)
+    official_account: CollectedOfficialAccount | None = None
+    metrics: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
 
