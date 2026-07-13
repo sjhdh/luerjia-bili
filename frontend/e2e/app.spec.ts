@@ -83,6 +83,33 @@ test("report separates source blocks and remains horizontally contained", async 
   await page.screenshot({ path: testInfo.outputPath("report.png"), fullPage: true });
 });
 
+test("partial report uses a real cover and accurate collection status", async ({ page }) => {
+  const cover = "https://i0.hdslb.com/bfs/archive/real-video-cover.jpg";
+  await page.unroute("**/api/v1/reports/demo");
+  await page.route("**/api/v1/reports/demo", (route) => route.fulfill({
+    json: {
+      ...demoReport,
+      partial: true,
+      hero: { ...demoReport.hero, cover_url: "//www.bilibili.com/favicon.ico" },
+      metrics: { ...demoReport.metrics, discovery_video_count: 21 },
+      videos: demoReport.videos.map((video, index) => ({ ...video, cover_url: index === 0 ? cover : null })),
+      data_quality: {
+        valid: false,
+        sample_count: 1646,
+        requested_sources: { bilibili_official: true, bilibili_discovery: true, taptap: false },
+        available_sources: { bilibili_official: true, bilibili_discovery: true, taptap: false },
+        empty_sources: [],
+        collection: {}
+      }
+    }
+  }));
+
+  await page.goto("/reports/demo");
+  await expect(page.getByText("部分采集未完整", { exact: true })).toBeVisible();
+  await expect(page.getByText("相关视频 10 个", { exact: true })).toBeVisible();
+  await expect(page.getByAltText("失控进化")).toHaveAttribute("src", cover);
+});
+
 test("report creates an anonymous read-only share link", async ({ page }) => {
   await page.route("**/api/v1/reports/demo/shares", (route) => route.fulfill({ status: 201, json: { id: "share-1", url: "https://example.test/share/opaque-token", expires_at: "2026-07-20T04:00:00Z" } }));
   await page.goto("/reports/demo");
