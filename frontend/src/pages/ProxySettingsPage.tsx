@@ -15,6 +15,7 @@ const defaults: ProxySettings = {
   latency_ms: null,
   last_checked_at: null,
   last_error: null,
+  target_results: {},
   pool_api: "https://proxy.scdn.io/api/get_proxy.php"
 };
 
@@ -87,7 +88,7 @@ export default function ProxySettingsPage() {
     }
   }
 
-  const routeHealthy = settings.mode === "direct" || Boolean(settings.active_proxy && !settings.last_error);
+  const routeHealthy = !settings.last_error && (settings.mode === "direct" || Boolean(settings.active_proxy));
 
   return <div className="workspace settings-workspace">
     <header className="settings-header">
@@ -122,12 +123,12 @@ export default function ProxySettingsPage() {
 
         <div className="proxy-actions">
           <button className="button primary" disabled={Boolean(busy)}>{busy === "save" ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}保存并切换</button>
-          {mode !== "direct" && <button type="button" className="button secondary" disabled={Boolean(busy) || (mode === "manual" && !manualProxy.trim())} onClick={() => void testRoute()}>{busy === "test" ? <LoaderCircle className="spin" size={17} /> : <Activity size={17} />}检测线路</button>}
+          <button type="button" className="button secondary" disabled={Boolean(busy) || (mode === "manual" && !manualProxy.trim())} onClick={() => void testRoute()}>{busy === "test" ? <LoaderCircle className="spin" size={17} /> : <Activity size={17} />}检测线路</button>
           {settings.mode === "auto" && <button type="button" className="button secondary" disabled={Boolean(busy)} onClick={() => void rotate()}>{busy === "rotate" ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}换一个节点</button>}
         </div>
       </form>
 
-      {check && <div className={`proxy-check ${check.reachable ? "reachable" : "unreachable"}`}>{check.reachable ? <CheckCircle2 size={18} /> : <Unplug size={18} />}<div><strong>{check.message}</strong><span>{check.proxy}{check.exit_ip ? ` · 出口 ${check.exit_ip}` : ""}{check.latency_ms != null ? ` · ${check.latency_ms} ms` : ""}</span></div></div>}
+      {check && <div className={`proxy-check ${check.reachable ? "reachable" : "unreachable"}`}>{check.reachable ? <CheckCircle2 size={18} /> : <Unplug size={18} />}<div><strong>{check.message}</strong><span>{check.proxy}{check.exit_ip ? ` · 出口 ${check.exit_ip}` : ""}{check.latency_ms != null ? ` · ${check.latency_ms} ms` : ""}</span><span className="proxy-targets">B站 {check.targets.bilibili ? "通过" : "失败"} · TapTap {check.targets.taptap ? "通过" : "失败"}</span></div></div>}
       <footer className="proxy-source"><span>代理池来源</span><a href={settings.pool_api} target="_blank" rel="noreferrer">proxy.scdn.io <ExternalLink size={13} /></a></footer>
     </section>
   </div>;

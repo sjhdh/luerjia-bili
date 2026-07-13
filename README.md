@@ -1,6 +1,6 @@
 # 路尔嘉舆情分析
 
-面向单一操作者的 B站 + TapTap 舆情分析工具。它通过用户可见网页低频采集视频、评论、弹幕列表和 TapTap 评价，完成情感分类、主题聚类、风险排序与报告导出。既可在 Windows 本机运行，也可作为受保护的 Linux 私有服务部署。
+面向单一操作者的 B站 + TapTap 舆情分析工具。它通过用户可见网页低频采集视频、评论、弹幕列表和 TapTap 评价，完成情感分类、业务议题识别、风险排序与报告导出。既可在 Windows 本机运行，也可作为受保护的 Linux 私有服务部署。
 
 ## 边界
 
@@ -70,11 +70,15 @@ sudo bash deploy/enable-https.sh
 - TapTap：支持持久登录、显式应用地址和网页评价采集；报告与 B站统一呈现但保持独立板块。
 - 视频权重：相关度 32%、播放量 24%、评论量 12%、弹幕量 8%、点赞率 8%、投币率 6%、收藏率 5%、时效 5%。
 - TapTap 星级：4–5 星正面、3 星中性、1–2 星负面。
-- 本地模型：`lxyuan/distilbert-base-multilingual-cased-sentiments-student`，固定 revision `cf991100d706c13c0a080c097134c05b7f436c45`。
+- GPT-5.6 复合模式：对去重、脱敏后的全部采集文本分批做三分类与多议题标注；低置信度结果归为中性，失败批次回退本地模型。
+- 本地回退：`lxyuan/distilbert-base-multilingual-cased-sentiments-student`，固定 revision `cf991100d706c13c0a080c097134c05b7f436c45`；纯表情、事实回复、无倾向提问和无主导混合表达校准为中性。
+- 高频词：先移除链接、表情、目标词和聊天口头词，再以 `jieba` 词性过滤、文档频次和领域短语生成，避免重复刷屏主导结果。
+- 风险议题：固定九类业务词表作为可解释基线，增强模式采用 GPT 语义多标签；风险分由负向率 50%、高赞负向影响 35%、议题声量 15% 组成，只用于当前样本内排序。
 - B站情感：评论占 80%，弹幕占 20%；跨平台指标采用平台等权。
+- 已完成任务可点击“AI 深度分析”，复用现有采集数据重新计算，不再次访问平台。
 - 页面报告是主交付物；可创建默认 7 天有效的匿名只读分享链接，令牌可撤销且不开放原始 CSV。
 
-## 可选 LLM 增强
+## GPT-5.6 复合分析
 
 复制 `.env.example` 为 `.env.local` 并设置：
 
@@ -82,9 +86,15 @@ sudo bash deploy/enable-https.sh
 OPENAI_BASE_URL=https://example.com/v1
 OPENAI_API_KEY=...
 OPENAI_MODEL=...
+LLM_BATCH_SIZE=120
+LLM_CONCURRENCY=2
+LLM_TIMEOUT_SECONDS=150
+LLM_MAX_RETRIES=3
+LLM_MAX_OUTPUT_TOKENS=8192
+LLM_CONFIDENCE_THRESHOLD=0.62
 ```
 
-增强模式只发送经过邮箱、手机号、QQ、URL 和用户名脱敏的代表性片段。接口失败会自动退回本地总结。
+复合模式会发送经过邮箱、手机号、QQ、URL 和 `@用户名` 脱敏的全部去重文本，不发送作者字段或 Cookie。GPT 输出经过结构校验后用于逐条情感、固定业务议题和 AI 深度研判；缺失、低置信度或失败批次自动使用校准后的本地结果，并在报告中显示覆盖率和告警。
 
 ## 网络路由
 

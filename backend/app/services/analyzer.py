@@ -1,31 +1,111 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import math
+import re
 from collections import Counter, defaultdict
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
 import jieba
-import numpy as np
-from sklearn.cluster import MiniBatchKMeans
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, silhouette_score
+import jieba.posseg as pseg
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 
 from ..config import Settings
 from ..models import ContentItem, Job, OfficialAccount, SourceApp, Video
+from .llm_analyzer import PROMPT_VERSION, LLMAnalyzer
 from .privacy import sanitize_text
 
 SENTIMENTS = ("positive", "neutral", "negative")
 SENTIMENT_CN = {"positive": "正面", "neutral": "中性", "negative": "负面"}
-POSITIVE_WORDS = {"好玩", "优秀", "喜欢", "流畅", "惊喜", "推荐", "良心", "期待", "不错", "有趣"}
-NEGATIVE_WORDS = {"垃圾", "失望", "卡顿", "掉帧", "外挂", "举报", "氪金", "发热", "闪退", "恶心", "无聊"}
+POSITIVE_WORDS = {
+    "好玩", "优秀", "喜欢", "流畅", "惊喜", "推荐", "良心", "期待", "不错", "有趣", "支持",
+    "跟手", "还原", "上头", "爱了", "真香", "满意", "舒服", "进步", "稳定",
+}
+NEGATIVE_WORDS = {
+    "垃圾", "失望", "卡顿", "掉帧", "外挂", "举报", "氪金", "发热", "闪退", "恶心", "无聊",
+    "劝退", "误判", "封号", "红温", "退游", "卸载", "一坨", "半成品", "崩溃", "霸凌",
+    "不公平", "不友好", "受罪", "折磨", "玩不了", "火不了", "吐了",
+}
 STOPWORDS = {
     "的", "了", "是", "我", "你", "他", "她", "它", "也", "都", "就", "和", "在", "有", "不", "这", "那",
     "一个", "没有", "什么", "还是", "但是", "游戏", "视频", "感觉", "真的", "可以", "就是", "比较", "非常",
+    "这个", "那个", "一下", "时候", "然后", "还有", "怎么", "为什么", "因为", "如果", "我们", "他们", "自己",
+    "现在", "直接", "不能", "不是", "不会", "知道", "觉得", "进行", "能够", "已经", "需要", "里面", "东西",
+    "不了", "只能", "只要", "可能", "应该", "也许", "希望", "建议", "问题", "请问", "求问", "有人", "有没有",
+    "大家", "朋友", "兄弟", "大佬", "世界", "这里", "这样", "这么", "有点", "进去", "出来", "对面", "明白",
+    "回复", "评论", "弹幕", "多少", "体验",
+    "官方", "玩家", "手机", "模式", "测试", "上线", "失控", "进化", "rust", "doge", "吃瓜", "大哭", "笑哭",
+    "星星", "思考", "打call", "链接", "隐藏", "三连", "第一", "哈哈", "哈哈哈", "666", "啊啊", "一点",
 }
+
+TOPIC_DEFINITIONS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "performance",
+        "label": "性能与设备适配",
+        "keywords": ("性能", "优化", "掉帧", "卡顿", "发热", "闪退", "黑屏", "帧率", "配置", "机型", "内存", "设备不支持", "旧包体", "服务器", "延迟", "ping"),
+    },
+    {
+        "id": "fairness",
+        "label": "新手发育与匹配公平",
+        "keywords": ("新手", "萌新", "匹配", "单排", "独狼", "小团体", "以多打少", "以大欺小", "服霸", "发育", "公平"),
+    },
+    {
+        "id": "anti_abuse",
+        "label": "外挂、组队与处罚",
+        "keywords": ("外挂", "开挂", "透视", "锁头", "自瞄", "非法组队", "反作弊", "封禁", "封号", "误判", "举报", "申诉", "判罚", "处罚"),
+    },
+    {
+        "id": "time_cost",
+        "label": "时间成本与硬核门槛",
+        "keywords": ("时间成本", "在线", "全天", "社畜", "七天", "7天", "偷家", "拆家", "抄家", "守家", "下线", "进度", "档期", "肝", "劝退"),
+    },
+    {
+        "id": "monetization",
+        "label": "商业化、皮肤与继承",
+        "keywords": ("氪金", "充值", "付费", "皮肤", "商城", "抽卡", "战令", "月卡", "继承", "豪宅", "跑车"),
+    },
+    {
+        "id": "experience",
+        "label": "操作、建造与交互",
+        "keywords": ("手感", "操作", "建造", "交互", "射击", "移动", "按键", "搓玻璃", "一键盖家", "领地柜", "科技UI", "建造UI", "电力UI"),
+    },
+    {
+        "id": "visual_audio",
+        "label": "画质、音效与表现",
+        "keywords": ("画质", "画面", "音效", "建模", "光影", "美术", "贴图", "黑夜", "亮度", "特效"),
+    },
+    {
+        "id": "rust_identity",
+        "label": "Rust 还原与产品差异",
+        "keywords": ("rust", "还原", "端游", "国服", "正版", "复刻", "移植", "原创", "差异", "soc"),
+    },
+    {
+        "id": "community",
+        "label": "社交与社区环境",
+        "keywords": ("队友", "社交", "骂人", "压力", "霸凌", "游戏环境", "组队", "搭子", "世界麦", "公屏", "保护费", "小队"),
+    },
+)
+
+TOPIC_BY_ID = {topic["id"]: topic for topic in TOPIC_DEFINITIONS}
+DOMAIN_PHRASES = tuple(
+    dict.fromkeys(
+        keyword.casefold()
+        for topic in TOPIC_DEFINITIONS
+        for keyword in topic["keywords"]
+        if len(keyword) >= 2
+    )
+)
+BRACKET_EMOJI = re.compile(r"\[[^\]]{1,30}\]")
+LINK_MARKER = re.compile(r"\[链接已隐藏\]|https?://\S+", re.IGNORECASE)
+
+AnalysisProgress = Callable[[int, str], Awaitable[None]]
+CancellationCheck = Callable[[], Awaitable[bool]]
+
+
+class AnalysisCancelled(RuntimeError):
+    pass
 
 
 class SentimentEngine:
@@ -92,13 +172,38 @@ class SentimentEngine:
             if mapped is None:
                 label_id = label.replace("label_", "")
                 mapped = {"0": "negative", "1": "neutral", "2": "positive"}.get(label_id, "neutral")
-            predictions.append((mapped, round(float(best["score"]), 6)))
+            predictions.append(self._calibrate(texts[len(predictions)], mapped, float(best["score"])))
         return predictions
 
     @staticmethod
+    def _calibrate(text: str, label: str, confidence: float) -> tuple[str, float]:
+        content = LINK_MARKER.sub(" ", BRACKET_EMOJI.sub(" ", text)).strip()
+        positive = sum(word in content for word in POSITIVE_WORDS)
+        negative = sum(word in content for word in NEGATIVE_WORDS)
+        factual = bool(
+            re.search(r"(先帮您同步|配置要求|排查一下|请确认|客户端与测试包|公告|预下载)", content)
+        )
+        question_only = bool(re.search(r"[?？]", content)) and not positive and not negative
+        ambiguous_short = len(re.sub(r"\W+", "", content)) <= 5 and not positive and not negative
+        if factual or question_only or ambiguous_short or (positive and negative):
+            return "neutral", round(max(0.52, 1 - confidence * 0.35), 6)
+        if confidence < 0.58:
+            return "neutral", round(max(0.52, confidence), 6)
+        if label == "negative" and not negative and confidence < 0.74:
+            return "neutral", round(max(0.52, confidence), 6)
+        if label == "positive" and not positive and confidence < 0.62:
+            return "neutral", round(max(0.52, confidence), 6)
+        return label, round(confidence, 6)
+
+    @staticmethod
     def _lexical_predict(text: str) -> tuple[str, float]:
-        positive = sum(word in text for word in POSITIVE_WORDS)
-        negative = sum(word in text for word in NEGATIVE_WORDS)
+        content = LINK_MARKER.sub(" ", BRACKET_EMOJI.sub(" ", text)).strip()
+        positive = sum(word in content for word in POSITIVE_WORDS)
+        negative = sum(word in content for word in NEGATIVE_WORDS)
+        if len(re.sub(r"\W+", "", content)) <= 5 or (
+            re.search(r"[?？]", content) and not positive and not negative
+        ):
+            return "neutral", 0.64
         if positive > negative:
             return "positive", min(0.9, 0.58 + 0.08 * (positive - negative))
         if negative > positive:
@@ -148,92 +253,149 @@ def _blend_bilibili(comments: dict[str, Any], danmakus: dict[str, Any]) -> dict[
     }
 
 
-def _extract_keywords(items: list[ContentItem], limit: int = 25) -> list[dict[str, Any]]:
-    tokens: list[str] = []
+def _clean_analysis_text(text: str) -> str:
+    return re.sub(r"\s+", " ", LINK_MARKER.sub(" ", BRACKET_EMOJI.sub(" ", text))).strip()
+
+
+def _keyword_exclusions(keyword: str) -> set[str]:
+    values = {keyword.casefold().replace(" ", "")}
+    values.update(token.casefold() for token in jieba.lcut(keyword) if len(token.strip()) >= 2)
+    return values
+
+
+def _extract_keywords(
+    items: list[ContentItem], keyword: str = "", limit: int = 25
+) -> list[dict[str, Any]]:
+    counts: Counter[str] = Counter()
     negative_counts: Counter[str] = Counter()
+    phrase_terms = set(DOMAIN_PHRASES)
+    exclusions = STOPWORDS | _keyword_exclusions(keyword)
     for item in items:
-        words = [
-            word.strip().casefold()
-            for word in jieba.lcut(item.text)
-            if len(word.strip()) >= 2 and word.strip().casefold() not in STOPWORDS
-        ]
-        tokens.extend(words)
-        if item.sentiment == "negative":
-            negative_counts.update(words)
-    counts = Counter(tokens)
+        content = _clean_analysis_text(item.text).casefold()
+        if not content:
+            continue
+        terms = {phrase for phrase in DOMAIN_PHRASES if phrase in content}
+        for token in pseg.cut(content):
+            word = token.word.strip().casefold()
+            flag = token.flag.casefold()
+            if (
+                len(word) < 2
+                or len(word) > 12
+                or word in exclusions
+                or word.isdigit()
+                or re.fullmatch(r"[a-z]", word)
+                or not (flag.startswith(("n", "v", "a")) or flag == "eng")
+            ):
+                continue
+            terms.add(word)
+        for term in terms:
+            counts[term] += 1
+            if item.sentiment == "negative":
+                negative_counts[term] += 1
+
+    ranked = sorted(
+        counts,
+        key=lambda term: (counts[term] * (1.2 if term in phrase_terms else 1.0), len(term)),
+        reverse=True,
+    )
+    selected: list[str] = []
+    for term in ranked:
+        if counts[term] < 2:
+            continue
+        if any(
+            term != chosen
+            and term in chosen
+            and counts[term] <= counts[chosen] * 1.2
+            for chosen in selected
+        ):
+            continue
+        selected.append(term)
+        if len(selected) >= limit:
+            break
     return [
         {
             "word": word,
-            "count": count,
-            "negative_ratio": round(negative_counts[word] / count, 3) if count else 0,
+            "count": counts[word],
+            "negative_ratio": round(negative_counts[word] / counts[word], 3),
         }
-        for word, count in counts.most_common(limit)
+        for word in selected
     ]
 
 
-def _extract_topics(items: list[ContentItem]) -> list[dict[str, Any]]:
-    usable = [item for item in items if len(item.text) >= 4]
-    if len(usable) < 12:
+def _rule_topic_assignments(items: list[ContentItem]) -> dict[int, list[str]]:
+    assignments: dict[int, list[str]] = {}
+    for item in items:
+        content = _clean_analysis_text(item.text).casefold()
+        matched = [
+            str(topic["id"])
+            for topic in TOPIC_DEFINITIONS
+            if any(str(keyword).casefold() in content for keyword in topic["keywords"])
+        ]
+        assignments[item.id] = matched
+    return assignments
+
+
+def _extract_topics(
+    items: list[ContentItem], assignments: dict[int, list[str]] | None = None
+) -> list[dict[str, Any]]:
+    if not items:
         return []
-    texts = [item.text for item in usable]
-    vectorizer = TfidfVectorizer(
-        tokenizer=jieba.lcut,
-        token_pattern=None,
-        stop_words=list(STOPWORDS),
-        max_features=2500,
-        min_df=2,
-        max_df=0.92,
-    )
-    try:
-        matrix = vectorizer.fit_transform(texts)
-    except ValueError:
+    resolved = assignments or _rule_topic_assignments(items)
+    grouped: dict[str, list[ContentItem]] = {str(topic["id"]): [] for topic in TOPIC_DEFINITIONS}
+    for item in items:
+        for topic_id in resolved.get(item.id, []):
+            if topic_id in grouped:
+                grouped[topic_id].append(item)
+
+    minimum_mentions = max(3, math.ceil(len(items) * 0.002))
+    eligible = {key: value for key, value in grouped.items() if len(value) >= minimum_mentions}
+    if not eligible:
         return []
-    max_k = min(8, len(usable) - 1)
-    candidate_ks = range(3, max_k + 1) if max_k >= 3 else [2]
-    best_model: MiniBatchKMeans | None = None
-    best_score = -1.0
-    sample_size = min(500, matrix.shape[0])
-    for k in candidate_ks:
-        model = MiniBatchKMeans(n_clusters=k, random_state=42, n_init="auto", batch_size=128)
-        labels = model.fit_predict(matrix)
-        if len(set(labels)) < 2:
-            continue
-        score = silhouette_score(matrix, labels, sample_size=sample_size, random_state=42)
-        if score > best_score:
-            best_score, best_model = score, model
-    if best_model is None:
-        return []
-    labels = best_model.labels_
-    terms = np.asarray(vectorizer.get_feature_names_out())
-    topics = []
-    for cluster_id in range(best_model.n_clusters):
-        indices = np.where(labels == cluster_id)[0].tolist()
-        if not indices:
-            continue
-        top_indices = best_model.cluster_centers_[cluster_id].argsort()[-6:][::-1]
-        keywords = [str(term) for term in terms[top_indices] if len(str(term)) >= 2]
-        cluster_items = [usable[index] for index in indices]
-        negative_count = sum(item.sentiment == "negative" for item in cluster_items)
-        negative_ratio = negative_count / len(cluster_items)
-        engagement = sum(math.log1p(item.likes) for item in cluster_items) / len(cluster_items)
-        risk_score = negative_ratio * math.log1p(len(cluster_items)) * (1 + engagement)
+    max_mentions = max(len(value) for value in eligible.values())
+    weighted_negative = {
+        topic_id: sum(
+            1 + math.log2(max(0, item.likes) + 1)
+            for item in topic_items
+            if item.sentiment == "negative"
+        )
+        for topic_id, topic_items in eligible.items()
+    }
+    max_impact = max(weighted_negative.values(), default=1.0) or 1.0
+    topics: list[dict[str, Any]] = []
+    for topic_id, topic_items in eligible.items():
+        definition = TOPIC_BY_ID[topic_id]
+        negative_items = [item for item in topic_items if item.sentiment == "negative"]
+        negative_ratio = len(negative_items) / len(topic_items)
+        risk_score = (
+            negative_ratio * 50
+            + weighted_negative[topic_id] / max_impact * 35
+            + len(topic_items) / max_mentions * 15
+        )
+        keyword_counts = Counter(
+            str(keyword)
+            for item in topic_items
+            for keyword in definition["keywords"]
+            if str(keyword).casefold() in _clean_analysis_text(item.text).casefold()
+        )
         representatives = sorted(
-            cluster_items,
-            key=lambda item: ((item.confidence or 0) + math.log1p(item.likes) * 0.05),
+            negative_items or topic_items,
+            key=lambda item: (math.log2(max(0, item.likes) + 1), item.confidence or 0),
             reverse=True,
         )[:3]
         topics.append(
             {
-                "id": cluster_id,
-                "name": " / ".join(keywords[:3]) or f"议题 {cluster_id + 1}",
-                "keywords": keywords,
-                "size": len(cluster_items),
+                "id": topic_id,
+                "name": definition["label"],
+                "keywords": [word for word, _count in keyword_counts.most_common(6)]
+                or list(definition["keywords"][:4]),
+                "size": len(topic_items),
                 "negative_ratio": round(negative_ratio * 100, 1),
-                "risk_score": round(risk_score, 3),
-                "samples": [item.text[:180] for item in representatives],
+                "risk_score": round(min(100.0, risk_score), 1),
+                "samples": [item.text[:240] for item in representatives],
+                "weighted_negative": round(weighted_negative[topic_id], 2),
             }
         )
-    return sorted(topics, key=lambda topic: topic["risk_score"], reverse=True)
+    return sorted(topics, key=lambda topic: (topic["risk_score"], topic["size"]), reverse=True)
 
 
 def _timeline(items: list[ContentItem]) -> list[dict[str, Any]]:
@@ -269,45 +431,6 @@ def _model_quality(items: list[ContentItem], model_predictions: dict[int, str]) 
     }
 
 
-async def _enhance_summary(
-    settings: Settings, keyword: str, metrics: dict[str, Any], topics: list[dict[str, Any]], samples: list[ContentItem]
-) -> tuple[dict[str, Any] | None, str | None]:
-    if not (settings.openai_base_url and settings.openai_api_key and settings.openai_model):
-        return None, "LLM 增强未配置，已使用本地总结"
-    evidence = [sanitize_text(item.text)[:300] for item in samples[:24]]
-    prompt = {
-        "keyword": keyword,
-        "metrics": metrics,
-        "topics": [{key: topic[key] for key in ("name", "size", "negative_ratio", "keywords")} for topic in topics[:6]],
-        "evidence": evidence,
-        "instruction": "仅依据给定统计与证据输出 JSON，字段为 overview、positives、risks、recommendations；每个字段为中文字符串或字符串数组，不得编造数字。",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=45) as client:
-            response = await client.post(
-                settings.openai_base_url.rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-                json={
-                    "model": settings.openai_model,
-                    "temperature": 0.2,
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {"role": "system", "content": "你是严谨的中文舆情分析员，只能引用输入证据。"},
-                        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-                    ],
-                },
-            )
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-            required = {"overview", "positives", "risks", "recommendations"}
-            if not required.issubset(parsed):
-                raise ValueError("LLM JSON 缺少字段")
-            return parsed, None
-    except Exception as exc:
-        return None, f"LLM 增强失败，已使用本地总结：{type(exc).__name__}"
-
-
 def _local_summary(keyword: str, overall: dict[str, Any], topics: list[dict[str, Any]]) -> dict[str, Any]:
     if not overall["total"]:
         return {
@@ -338,17 +461,99 @@ async def analyze_job(
     apps: list[SourceApp],
     items: list[ContentItem],
     official_account: OfficialAccount | None = None,
+    analysis_progress: AnalysisProgress | None = None,
+    is_cancelled: CancellationCheck | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     engine = SentimentEngine(settings)
     predictions = await engine.predict([item.text for item in items])
     model_predictions: dict[int, str] = {}
     for item, (sentiment, confidence) in zip(items, predictions, strict=True):
         model_predictions[item.id] = sentiment
-        if item.platform == "taptap" and item.rating:
-            sentiment = "positive" if item.rating >= 4 else "neutral" if item.rating == 3 else "negative"
-            confidence = 1.0
         item.sentiment = sentiment
         item.confidence = confidence
+    evaluated_predictions = dict(model_predictions)
+
+    warnings: list[str] = [engine.warning] if engine.warning else []
+    topic_assignments = _rule_topic_assignments(items)
+    llm_engine: LLMAnalyzer | None = None
+    llm_result = None
+    analysis_meta: dict[str, Any] = {
+        "mode": job.analysis_mode,
+        "sentiment_source": "local_model_calibrated",
+        "local_model": settings.local_model_id,
+        "local_model_revision": settings.local_model_revision,
+    }
+    if job.analysis_mode == "enhanced":
+        llm_engine = LLMAnalyzer(settings)
+
+        async def report_batch_progress(done: int, total: int) -> None:
+            if is_cancelled and await is_cancelled():
+                raise AnalysisCancelled("analysis cancelled")
+            if analysis_progress:
+                percentage = 92 + round(done / max(1, total) * 4)
+                await analysis_progress(percentage, f"GPT-5.6 正在复核文本 {done}/{total}")
+
+        llm_result = await llm_engine.classify(
+            items,
+            keyword=job.keyword,
+            progress=report_batch_progress,
+        )
+        warnings.extend(llm_result.warnings)
+        agreement = 0
+        for item in items:
+            label = llm_result.labels.get(item.id)
+            if not label:
+                continue
+            agreement += model_predictions.get(item.id) == label.sentiment
+            evaluated_predictions[item.id] = label.sentiment
+            item.sentiment = label.sentiment
+            item.confidence = label.confidence
+            # An empty semantic topic is meaningful: it clears false-positive
+            # keyword matches made by the deterministic fallback.
+            topic_assignments[item.id] = label.topics
+            item.raw_meta = {
+                **(item.raw_meta or {}),
+                "analysis": {
+                    "source": "llm",
+                    "model": llm_engine.model,
+                    "prompt_version": PROMPT_VERSION,
+                    "topics": topic_assignments.get(item.id, []),
+                },
+            }
+        covered = len(llm_result.labels)
+        coverage = covered / max(1, len(items))
+        if covered < len(items):
+            warnings.append(
+                f"GPT-5.6 覆盖 {covered}/{len(items)} 条，其余使用校准后的本地模型"
+            )
+        analysis_meta.update(
+            {
+                "sentiment_source": "gpt-5.6_with_local_fallback",
+                "llm_model": llm_engine.model,
+                "prompt_version": PROMPT_VERSION,
+                "llm_coverage": round(coverage, 4),
+                "llm_covered_count": covered,
+                "llm_unique_input_count": llm_result.unique_input_count,
+                "llm_batch_count": llm_result.batch_count,
+                "local_llm_agreement": round(agreement / max(1, covered), 4),
+                "prompt_tokens": llm_result.prompt_tokens,
+                "completion_tokens": llm_result.completion_tokens,
+            }
+        )
+
+    for item in items:
+        if item.platform == "taptap" and item.rating:
+            item.sentiment = (
+                "positive" if item.rating >= 4 else "neutral" if item.rating == 3 else "negative"
+            )
+            item.confidence = 1.0
+            item.raw_meta = {
+                **(item.raw_meta or {}),
+                "analysis": {
+                    **dict((item.raw_meta or {}).get("analysis") or {}),
+                    "sentiment_source": "rating",
+                },
+            }
 
     comments = [
         item for item in items if item.platform == "bilibili" and item.kind == "comment"
@@ -392,8 +597,8 @@ async def analyze_job(
         "items": overall_items,
         "platform_equal_weight": True,
     }
-    keywords = _extract_keywords(items)
-    topics = _extract_topics(items)
+    keywords = _extract_keywords(items, job.keyword)
+    topics = _extract_topics(items, topic_assignments)
     metrics = {
         "video_count": len(videos),
         "selected_video_count": sum(bool(video.selected) for video in videos),
@@ -409,21 +614,8 @@ async def analyze_job(
         "overall_neutral": overall_items[1]["percentage"],
         "overall_negative": overall_items[2]["percentage"],
     }
-    quality = _model_quality(reviews, model_predictions)
+    quality = _model_quality(reviews, evaluated_predictions)
     summary = _local_summary(job.keyword, overall, topics)
-    warnings: list[str] = [engine.warning] if engine.warning else []
-    if job.analysis_mode == "enhanced":
-        enhanced, warning = await _enhance_summary(
-            settings,
-            job.keyword,
-            metrics,
-            topics,
-            sorted(items, key=lambda item: item.likes, reverse=True),
-        )
-        if enhanced:
-            summary = {**enhanced, "enhanced": True}
-        if warning:
-            warnings.append(warning)
 
     rating_counts = Counter(item.rating for item in reviews if item.rating)
     rating_total = sum(rating_counts.values())
@@ -518,7 +710,7 @@ async def analyze_job(
         distribution: dict[str, Any],
         section_videos: list[Video] | None = None,
     ) -> dict[str, Any]:
-        section_topics = _extract_topics(section_items)
+        section_topics = _extract_topics(section_items, topic_assignments)
         return {
             "key": key,
             "label": label,
@@ -533,7 +725,7 @@ async def analyze_job(
             },
             "sentiment": distribution,
             "timeline": _timeline(section_items),
-            "keywords": _extract_keywords(section_items),
+            "keywords": _extract_keywords(section_items, job.keyword),
             "topics": section_topics,
             "samples": section_samples(section_items),
             "videos": video_rows(section_videos or []),
@@ -589,6 +781,109 @@ async def analyze_job(
     ]
     if empty_sources:
         warnings.append("以下来源没有有效样本：" + "、".join(empty_sources))
+    data_quality = {
+        "valid": bool(items) and not empty_sources and not job.partial,
+        "sample_count": len(items),
+        "requested_sources": requested,
+        "available_sources": source_available,
+        "empty_sources": empty_sources,
+        "collection": job.collection_metrics or {},
+    }
+    ai_analysis: dict[str, Any] | None = None
+    if job.analysis_mode == "enhanced" and llm_engine is not None:
+        if is_cancelled and await is_cancelled():
+            raise AnalysisCancelled("analysis cancelled")
+        if analysis_progress:
+            await analysis_progress(97, "GPT-5.6 正在生成深度研判")
+        evidence_candidates: list[ContentItem] = []
+        seen_evidence: set[int] = set()
+        for sentiment in SENTIMENTS:
+            candidates = sorted(
+                (item for item in items if item.sentiment == sentiment),
+                key=lambda item: (math.log2(max(0, item.likes) + 1), item.confidence or 0),
+                reverse=True,
+            )[:16]
+            for item in candidates:
+                if item.id not in seen_evidence:
+                    seen_evidence.add(item.id)
+                    evidence_candidates.append(item)
+        for topic in topics[:8]:
+            topic_id = str(topic["id"])
+            candidates = sorted(
+                (item for item in items if topic_id in topic_assignments.get(item.id, [])),
+                key=lambda item: (item.sentiment == "negative", math.log2(max(0, item.likes) + 1)),
+                reverse=True,
+            )[:3]
+            for item in candidates:
+                if item.id not in seen_evidence:
+                    seen_evidence.add(item.id)
+                    evidence_candidates.append(item)
+        report_metrics = {
+            **metrics,
+            "sections": {
+                key: {
+                    "sample_count": value["metrics"]["sample_count"],
+                    "sentiment": value["sentiment"]["items"],
+                }
+                for key, value in sections.items()
+            },
+        }
+        report_evidence = [
+                {
+                    "id": item.id,
+                    "text": sanitize_text(item.text)[:420],
+                    "sentiment": item.sentiment,
+                    "confidence": item.confidence,
+                    "likes": item.likes,
+                    "source_scope": item.source_scope,
+                    "topics": topic_assignments.get(item.id, []),
+                }
+                for item in evidence_candidates[:60]
+            ]
+        ai_analysis, ai_warning, report_usage = await llm_engine.generate_report(
+            keyword=job.keyword,
+            metrics=report_metrics,
+            topics=topics,
+            keywords=keywords,
+            evidence=report_evidence,
+            data_quality=data_quality,
+        )
+        if report_usage:
+            analysis_meta["prompt_tokens"] = int(analysis_meta.get("prompt_tokens", 0)) + int(
+                report_usage.get("prompt_tokens", 0)
+            )
+            analysis_meta["completion_tokens"] = int(
+                analysis_meta.get("completion_tokens", 0)
+            ) + int(report_usage.get("completion_tokens", 0))
+        if ai_warning:
+            warnings.append(ai_warning)
+        if ai_analysis:
+            ai_analysis["evidence"] = report_evidence
+            finding_titles = [
+                str(row.get("title"))
+                for row in ai_analysis.get("findings", [])
+                if isinstance(row, dict) and row.get("title")
+            ]
+            risk_titles = [
+                str(row.get("title"))
+                for row in ai_analysis.get("risks", [])
+                if isinstance(row, dict) and row.get("title")
+            ]
+            actions = [
+                str(row.get("action"))
+                for row in ai_analysis.get("actions", [])
+                if isinstance(row, dict) and row.get("action")
+            ]
+            summary = {
+                "overview": ai_analysis["executive_summary"],
+                "positives": finding_titles[:3] or summary["positives"],
+                "risks": risk_titles[:3] or summary["risks"],
+                "recommendations": actions[:3] or summary["recommendations"],
+                "enhanced": True,
+            }
+            analysis_meta["report_generated"] = True
+        else:
+            analysis_meta["report_generated"] = False
     payload = {
         "id": job.id,
         "keyword": job.keyword,
@@ -616,6 +911,8 @@ async def analyze_job(
         "keywords": keywords,
         "tags": (apps[0].tags or []) if apps else [],
         "topics": topics,
+        "analysis": analysis_meta,
+        "ai_analysis": ai_analysis,
         "samples": samples,
         "videos": video_rows(selected_videos),
         "official_account": {
@@ -635,22 +932,27 @@ async def analyze_job(
             "score": apps[0].score,
             "rating_count": apps[0].rating_count,
         } if apps else None,
-        "model_quality": {**quality, "model": settings.local_model_id, "revision": settings.local_model_revision},
-        "summary": summary,
-        "data_quality": {
-            "valid": bool(items) and not empty_sources and not job.partial,
-            "sample_count": len(items),
-            "requested_sources": requested,
-            "available_sources": source_available,
-            "empty_sources": empty_sources,
-            "collection": job.collection_metrics or {},
+        "model_quality": {
+            **quality,
+            **analysis_meta,
+            "model": llm_engine.model
+            if llm_engine and analysis_meta.get("llm_covered_count")
+            else settings.local_model_id,
+            "revision": PROMPT_VERSION
+            if llm_engine and analysis_meta.get("llm_covered_count")
+            else settings.local_model_revision,
         },
+        "summary": summary,
+        "data_quality": data_quality,
         "methodology": {
             "bilibili_official": "官号时间范围内视频穷尽分页；顶层评论与楼中楼完整性逐视频核对",
             "bilibili_discovery": "关键词相关视频按互动权重采样；与官号 BVID 去重后分析",
             "bilibili": "登录用户可见网页低频采集；评论 80%、可见弹幕 20% 加权",
             "taptap": "公开网页评价；4-5星正面、3星中性、1-2星负面",
-            "combined": "平台等权平均；不使用隐藏 API，不绕过验证码或风控",
+            "analysis": "增强模式由 GPT-5.6 全量分批标注，确定性代码聚合固定业务议题与风险分；失败批次回退校准后的本地模型"
+            if job.analysis_mode == "enhanced"
+            else "校准后的本地三分类模型；低置信度、纯表情、事实回复与无主导混合表达归为中性",
+            "combined": "平台等权平均；风险分用于样本内运营排序，不等同于真实用户负面概率；不绕过验证码或风控",
         },
     }
     return payload, warnings

@@ -13,7 +13,7 @@ from ..sources.base import AwaitingSourceSelection, CollectionResult, SourcePaus
 from ..sources.bilibili import BilibiliVisibleSource
 from ..sources.browser import BilibiliBrowserManager
 from ..sources.taptap import TapTapVisibleSource
-from .analyzer import analyze_job
+from .analyzer import AnalysisCancelled, analyze_job
 from .privacy import anonymize_author, sanitize_text
 
 
@@ -24,10 +24,12 @@ class JobRunner:
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.worker: asyncio.Task[None] | None = None
         self._queued: set[str] = set()
+        self._analysis_only: set[str] = set()
 
     async def start(self) -> None:
         self.queue = asyncio.Queue()
         self._queued.clear()
+        self._analysis_only.clear()
         await self._recover_jobs()
         await self.cleanup_retention()
         await self._audit_empty_reports()
@@ -42,7 +44,9 @@ class JobRunner:
                 pass
             self.worker = None
 
-    async def enqueue(self, job_id: str) -> None:
+    async def enqueue(self, job_id: str, *, analysis_only: bool = False) -> None:
+        if analysis_only:
+            self._analysis_only.add(job_id)
         if job_id not in self._queued:
             self._queued.add(job_id)
             await self.queue.put(job_id)
@@ -51,8 +55,10 @@ class JobRunner:
         while True:
             job_id = await self.queue.get()
             self._queued.discard(job_id)
+            analysis_only = job_id in self._analysis_only
+            self._analysis_only.discard(job_id)
             try:
-                await self._run_job(job_id)
+                await self._run_job(job_id, analysis_only=analysis_only)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -140,11 +146,14 @@ class JobRunner:
             if changed:
                 await session.commit()
 
-    async def _run_job(self, job_id: str) -> None:
+    async def _run_job(self, job_id: str, *, analysis_only: bool = False) -> None:
         async with SessionLocal() as session:
             job = await session.get(Job, job_id)
             if not job or job.cancel_requested:
                 return
+            analysis_only = analysis_only or bool(
+                (job.collection_metrics or {}).get("analysis_only")
+            )
             bili_complete = bool((job.collection_metrics or {}).get("bilibili_complete"))
             official_phase_complete = bool(
                 (job.collection_metrics or {}).get("official_phase_complete")
@@ -172,7 +181,7 @@ class JobRunner:
                     or 0
                 )
 
-        if (job.include_discovery or job.official_mid) and not bili_complete:
+        if not analysis_only and (job.include_discovery or job.official_mid) and not bili_complete:
             await self._set_status(job_id, JobStatus.COLLECTING, "采集 B站", 2, "准备采集")
             try:
                 bili_result = await BilibiliVisibleSource(
@@ -211,7 +220,7 @@ class JobRunner:
             job = await session.get(Job, job_id)
             assert job is not None
             taptap_complete = bool((job.collection_metrics or {}).get("taptap_complete"))
-        if job.include_taptap and not taptap_complete:
+        if not analysis_only and job.include_taptap and not taptap_complete:
             try:
                 tap_result = await TapTapVisibleSource(self.settings, self.browser_manager).collect(
                     keyword=job.keyword,
@@ -300,14 +309,39 @@ class JobRunner:
                 or official_incomplete
                 or taptap_incomplete
             )
-            payload, analysis_warnings = await analyze_job(
-                self.settings,
-                current,
-                current.videos,
-                current.source_apps,
-                current.contents,
-                current.official_account,
-            )
+            try:
+                payload, analysis_warnings = await analyze_job(
+                    self.settings,
+                    current,
+                    current.videos,
+                    current.source_apps,
+                    current.contents,
+                    current.official_account,
+                    analysis_progress=lambda progress, message: self._set_status(
+                        job_id,
+                        JobStatus.ANALYZING,
+                        "GPT-5.6 复合分析",
+                        progress,
+                        message,
+                    ),
+                    is_cancelled=lambda: self._is_cancelled(job_id),
+                )
+            except AnalysisCancelled:
+                current.status = JobStatus.CANCELLED.value
+                current.stage = "已取消"
+                current.progress = 100
+                current.message = "分析已取消，原采集数据与报告已保留"
+                current.finished_at = datetime.now(timezone.utc)
+                await session.commit()
+                return
+            if await self._is_cancelled(job_id):
+                current.status = JobStatus.CANCELLED.value
+                current.stage = "已取消"
+                current.progress = 100
+                current.message = "分析已取消，原采集数据与报告已保留"
+                current.finished_at = datetime.now(timezone.utc)
+                await session.commit()
+                return
             if analysis_warnings:
                 current.warnings = list(dict.fromkeys(current.warnings + analysis_warnings))
                 payload["warnings"] = current.warnings
@@ -504,6 +538,8 @@ class JobRunner:
         async with SessionLocal() as session:
             job = await session.get(Job, job_id)
             if not job:
+                return
+            if job.cancel_requested and status != JobStatus.CANCELLED:
                 return
             job.status = status.value
             job.stage = stage

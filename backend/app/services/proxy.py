@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Literal
@@ -18,6 +18,10 @@ ProxyProtocol = Literal["http", "https", "socks4", "socks5"]
 
 POOL_URL = "https://proxy.scdn.io/api/get_proxy.php"
 CHECK_URL = "https://api.ipify.org?format=json"
+TARGET_URLS = {
+    "bilibili": "https://www.bilibili.com/robots.txt",
+    "taptap": "https://www.taptap.cn/robots.txt",
+}
 ALLOWED_PROTOCOLS = {"http", "https", "socks4", "socks5"}
 
 
@@ -42,6 +46,7 @@ class ProxyRuntimeState:
     latency_ms: int | None = None
     last_checked_at: str | None = None
     last_error: str | None = None
+    target_results: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -52,6 +57,7 @@ class ProxyCheck:
     exit_ip: str | None
     message: str
     checked_at: str
+    targets: dict[str, bool] = field(default_factory=dict)
 
 
 class ProxyManager:
@@ -84,6 +90,10 @@ class ProxyManager:
                 latency_ms=payload.get("latency_ms"),
                 last_checked_at=payload.get("last_checked_at") or None,
                 last_error=payload.get("last_error") or None,
+                target_results={
+                    str(key): bool(value)
+                    for key, value in dict(payload.get("target_results") or {}).items()
+                },
             )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return ProxyRuntimeState(last_error="代理配置损坏，已恢复为直连")
@@ -141,32 +151,35 @@ class ProxyManager:
         scheme = urlsplit(server).scheme
         try:
             if scheme == "socks4":
-                parsed = urlsplit(server)
-                assert parsed.hostname and parsed.port
-                _reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(parsed.hostname, parsed.port), timeout=5
-                )
-                writer.close()
-                await writer.wait_closed()
-                latency = round((monotonic() - started) * 1000)
                 return ProxyCheck(
                     proxy=server,
-                    reachable=True,
-                    latency_ms=latency,
+                    reachable=False,
+                    latency_ms=None,
                     exit_ip=None,
-                    message="SOCKS4 端口可连接，将由浏览器完成协议验证",
+                    message="SOCKS4 无法完成目标站 TLS 验证，已拒绝接入登录会话",
                     checked_at=checked_at,
+                    targets={key: False for key in TARGET_URLS},
                 )
             timeout = httpx.Timeout(8, connect=5)
             async with httpx.AsyncClient(
                 proxy=server,
                 timeout=timeout,
-                follow_redirects=False,
+                follow_redirects=True,
                 trust_env=False,
             ) as client:
                 response = await client.get(CHECK_URL, headers={"Accept": "application/json"})
                 response.raise_for_status()
                 payload = response.json()
+                targets: dict[str, bool] = {}
+                for name, url in TARGET_URLS.items():
+                    target_response = await client.get(
+                        url,
+                        headers={"Accept": "text/plain,text/html;q=0.8", "Range": "bytes=0-2047"},
+                    )
+                    targets[name] = target_response.status_code < 500 and target_response.status_code != 407
+                if not all(targets.values()):
+                    failed = "、".join(name for name, available in targets.items() if not available)
+                    raise ProxyUnavailableError(f"目标站不可用：{failed}")
             latency = round((monotonic() - started) * 1000)
             exit_ip = str(payload.get("ip") or "").strip() or None
             return ProxyCheck(
@@ -174,15 +187,18 @@ class ProxyManager:
                 reachable=True,
                 latency_ms=latency,
                 exit_ip=exit_ip,
-                message="代理出口可用",
+                message="代理已通过出口、B站与 TapTap 严格 TLS 检测",
                 checked_at=checked_at,
+                targets=targets,
             )
-        except (OSError, ValueError, httpx.HTTPError, TimeoutError) as exc:
+        except (OSError, ValueError, httpx.HTTPError, ProxyUnavailableError, TimeoutError) as exc:
             detail = str(exc).casefold()
             if "certificate_verify_failed" in detail or "certificate verify failed" in detail:
                 message = "TLS 证书被代理替换，可能泄露登录会话，已拒绝使用"
             elif isinstance(exc, (TimeoutError, httpx.TimeoutException)):
                 message = "代理连接超时"
+            elif isinstance(exc, ProxyUnavailableError):
+                message = str(exc)
             else:
                 message = f"代理不可用：{type(exc).__name__}"
             return ProxyCheck(
@@ -192,19 +208,81 @@ class ProxyManager:
                 exit_ip=None,
                 message=message,
                 checked_at=checked_at,
+                targets={key: False for key in TARGET_URLS},
+            )
+        except Exception as exc:
+            # Some SOCKS transports expose httpcore exceptions directly instead
+            # of wrapping them as httpx.HTTPError. Treat them as candidate-local.
+            return ProxyCheck(
+                proxy=server,
+                reachable=False,
+                latency_ms=None,
+                exit_ip=None,
+                message=f"代理握手异常：{type(exc).__name__}",
+                checked_at=checked_at,
+                targets={key: False for key in TARGET_URLS},
+            )
+
+    async def _check_direct(self) -> ProxyCheck:
+        started = monotonic()
+        checked_at = self._now()
+        try:
+            timeout = httpx.Timeout(10, connect=6)
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=True,
+                trust_env=False,
+            ) as client:
+                response = await client.get(CHECK_URL, headers={"Accept": "application/json"})
+                response.raise_for_status()
+                exit_ip = str(response.json().get("ip") or "").strip() or None
+                targets = {}
+                for name, url in TARGET_URLS.items():
+                    target_response = await client.get(
+                        url,
+                        headers={"Accept": "text/plain,text/html;q=0.8", "Range": "bytes=0-2047"},
+                    )
+                    targets[name] = target_response.status_code < 500
+            reachable = all(targets.values())
+            failed = "、".join(name for name, available in targets.items() if not available)
+            return ProxyCheck(
+                proxy="DIRECT",
+                reachable=reachable,
+                latency_ms=round((monotonic() - started) * 1000),
+                exit_ip=exit_ip,
+                message="直连已通过出口、B站与 TapTap 检测"
+                if reachable
+                else f"直连目标站不可用：{failed}",
+                checked_at=checked_at,
+                targets=targets,
+            )
+        except (OSError, ValueError, httpx.HTTPError, TimeoutError) as exc:
+            return ProxyCheck(
+                proxy="DIRECT",
+                reachable=False,
+                latency_ms=None,
+                exit_ip=None,
+                message=f"直连检测失败：{type(exc).__name__}",
+                checked_at=checked_at,
+                targets={key: False for key in TARGET_URLS},
             )
 
     async def test(self, value: str | None = None, protocol: ProxyProtocol | None = None) -> ProxyCheck:
         selected_protocol = protocol or self._state.protocol
         candidate = value or self._state.active_proxy or self._state.manual_proxy
-        server = self.normalize_proxy(candidate, selected_protocol)
-        result = await self._check_proxy(server)
+        if not candidate and self._state.mode == "direct":
+            server = "DIRECT"
+            result = await self._check_direct()
+        else:
+            server = self.normalize_proxy(candidate, selected_protocol)
+            result = await self._check_proxy(server)
         async with self._lock:
-            if server == self._state.active_proxy:
+            if server == self._state.active_proxy or server == "DIRECT" and self._state.mode == "direct":
                 self._state.exit_ip = result.exit_ip
                 self._state.latency_ms = result.latency_ms
                 self._state.last_checked_at = result.checked_at
                 self._state.last_error = None if result.reachable else result.message
+                self._state.target_results = result.targets
                 self._save()
         return result
 
@@ -254,7 +332,24 @@ class ProxyManager:
         failures: list[ProxyCheck] = []
         for offset in range(0, len(ordered), 4):
             batch = ordered[offset : offset + 4]
-            results = await asyncio.gather(*(self._check_proxy(candidate) for candidate in batch))
+            raw_results = await asyncio.gather(
+                *(self._check_proxy(candidate) for candidate in batch),
+                return_exceptions=True,
+            )
+            results = [
+                result
+                if isinstance(result, ProxyCheck)
+                else ProxyCheck(
+                    proxy=candidate,
+                    reachable=False,
+                    latency_ms=None,
+                    exit_ip=None,
+                    message=f"代理握手异常：{type(result).__name__}",
+                    checked_at=self._now(),
+                    targets={key: False for key in TARGET_URLS},
+                )
+                for candidate, result in zip(batch, raw_results, strict=True)
+            ]
             reachable = [result for result in results if result.reachable]
             if reachable:
                 return min(reachable, key=lambda item: item.latency_ms or 1_000_000)
@@ -290,6 +385,8 @@ class ProxyManager:
                 raise ProxyUnavailableError(result.message)
         elif mode == "auto":
             result = await self._select_pool_proxy(protocol, country, pool_size, None)
+        else:
+            result = await self._check_direct()
 
         async with self._lock:
             self._state = ProxyRuntimeState(
@@ -298,12 +395,13 @@ class ProxyManager:
                 country_code=country,
                 pool_size=pool_size,
                 manual_proxy=normalized_manual,
-                active_proxy=result.proxy if result else None,
+                active_proxy=result.proxy if result and mode != "direct" else None,
                 active_source=("manual" if mode == "manual" else "pool" if mode == "auto" else "direct"),
                 exit_ip=result.exit_ip if result else None,
                 latency_ms=result.latency_ms if result else None,
                 last_checked_at=result.checked_at if result else None,
-                last_error=None,
+                last_error=None if result and result.reachable else result.message if result else None,
+                target_results=result.targets if result else {},
             )
             self._save()
             return self.state()
@@ -324,6 +422,7 @@ class ProxyManager:
             self._state.latency_ms = result.latency_ms
             self._state.last_checked_at = result.checked_at
             self._state.last_error = None
+            self._state.target_results = result.targets
             self._save()
             return self.state()
 
@@ -348,5 +447,6 @@ class ProxyManager:
             self._state.latency_ms = result.latency_ms
             self._state.last_checked_at = result.checked_at
             self._state.last_error = None
+            self._state.target_results = result.targets
             self._save()
         return result.proxy

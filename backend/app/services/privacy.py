@@ -8,6 +8,7 @@ REDACTION_RULES = [
     (re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"), "[手机号已隐藏]"),
     (re.compile(r"(?i)https?://\S+|www\.\S+"), "[链接已隐藏]"),
     (re.compile(r"(?i)(?:QQ|企鹅|q号)\s*[:：]?\s*[1-9]\d{4,11}"), "[QQ已隐藏]"),
+    (re.compile(r"(?<![\w@])@[\w\u4e00-\u9fff·.-]{1,32}"), "[用户名已隐藏]"),
 ]
 
 

@@ -39,8 +39,14 @@ class Settings(BaseSettings):
     local_model_revision: str = "cf991100d706c13c0a080c097134c05b7f436c45"
     model_batch_size: int = 16
     openai_base_url: str | None = None
-    openai_api_key: str | None = Field(default=None, repr=False)
+    openai_api_key: SecretStr | None = Field(default=None, repr=False)
     openai_model: str | None = None
+    llm_batch_size: int = Field(default=120, ge=20, le=200)
+    llm_concurrency: int = Field(default=2, ge=1, le=4)
+    llm_timeout_seconds: int = Field(default=150, ge=30, le=300)
+    llm_max_retries: int = Field(default=3, ge=1, le=5)
+    llm_max_output_tokens: int = Field(default=8192, ge=1024, le=32768)
+    llm_confidence_threshold: float = Field(default=0.62, ge=0.5, le=0.9)
     raw_retention_days: int = 30
     report_retention_days: int = 180
     crawl_min_delay_seconds: float = 1.2
@@ -85,6 +91,10 @@ class Settings(BaseSettings):
         if self.session_secret:
             return self.session_secret.get_secret_value()
         return self.admin_password_value or "local-development-session"
+
+    @property
+    def openai_api_key_value(self) -> str:
+        return self.openai_api_key.get_secret_value() if self.openai_api_key else ""
 
     @property
     def allowed_hosts(self) -> list[str]:
