@@ -43,3 +43,37 @@ async def test_new_browser_context_uses_the_active_proxy(tmp_path: Path, monkeyp
     context = await manager.connect(platform="bilibili")
     assert context is fake_context
     assert captured["proxy"] == {"server": "http://192.0.2.30:8080"}
+
+
+async def test_existing_risk_page_is_not_replaced_when_workspace_reopens(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = BilibiliBrowserManager(Settings(data_dir=tmp_path, _env_file=None))
+    calls = {"goto": 0, "front": 0}
+
+    class FakePage:
+        url = "https://captcha.example.test/verify"
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def goto(self, *_args, **_kwargs) -> None:
+            calls["goto"] += 1
+
+        async def bring_to_front(self) -> None:
+            calls["front"] += 1
+
+    class FakeContext:
+        pages: list[object] = []
+
+    page = FakePage()
+    manager._sessions["taptap"].workspace_page = page  # type: ignore[assignment]
+    manager._sessions["taptap"].risk_detected = True
+
+    async def connect(*_args, **_kwargs):
+        return FakeContext()
+
+    monkeypatch.setattr(manager, "connect", connect)
+    await manager.start_login("taptap")
+    assert calls == {"goto": 0, "front": 1}
+    assert manager._sessions["taptap"].risk_detected is True

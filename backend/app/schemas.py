@@ -77,6 +77,10 @@ class TapTapSelection(BaseModel):
     app_id: str = Field(min_length=1, max_length=40)
 
 
+class ReanalysisRequest(BaseModel):
+    analysis_mode: Literal["local", "enhanced"] = "enhanced"
+
+
 class BrowserSessionRead(BaseModel):
     platform: Literal["bilibili", "taptap"] = "bilibili"
     running: bool
@@ -141,6 +145,7 @@ class ProxySettingsRead(BaseModel):
     latency_ms: int | None
     last_checked_at: str | None
     last_error: str | None
+    target_results: dict[str, bool] = Field(default_factory=dict)
     pool_api: str
 
 
@@ -151,6 +156,7 @@ class ProxyCheckRead(BaseModel):
     exit_ip: str | None
     message: str
     checked_at: str
+    targets: dict[str, bool] = Field(default_factory=dict)
 
 
 class LoginRequest(BaseModel):

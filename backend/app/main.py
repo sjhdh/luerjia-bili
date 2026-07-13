@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -42,6 +42,7 @@ from .schemas import (
     ProxySettingsRead,
     ProxySettingsUpdate,
     ProxyTestRequest,
+    ReanalysisRequest,
     ShareCreate,
     ShareRead,
     TapTapSelection,
@@ -442,6 +443,8 @@ async def retry_job(job_id: str, session: AsyncSession = Depends(get_session)) -
     if job.status == JobStatus.AWAITING_TAPTAP_SELECTION.value:
         raise HTTPException(status_code=409, detail="请先选择 TapTap 应用")
     preserve_checkpoint = bool(
+        (job.collection_metrics or {}).get("analysis_only")
+        or
         job.status == JobStatus.AWAITING_LOGIN.value
         or (
             job.official_mid
@@ -491,6 +494,47 @@ async def rerun_job(job_id: str, session: AsyncSession = Depends(get_session)) -
     await session.refresh(clone)
     await runner.enqueue(clone.id)
     return clone
+
+
+@app.post("/api/v1/jobs/{job_id}/reanalyze", response_model=JobRead)
+async def reanalyze_job(
+    job_id: str,
+    payload: ReanalysisRequest,
+    session: AsyncSession = Depends(get_session),
+) -> Job:
+    active = await session.scalar(
+        select(Job.id).where(Job.status.in_([status.value for status in ACTIVE_JOB_STATUSES]))
+    )
+    if active:
+        raise HTTPException(status_code=409, detail="当前已有任务运行，请等待完成或先取消")
+    job = await session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    content_count = await session.scalar(
+        select(func.count(ContentItem.id)).where(ContentItem.job_id == job_id)
+    )
+    if not content_count:
+        raise HTTPException(status_code=409, detail="该任务没有可复用的采集文本，请重新采集")
+    job.analysis_mode = payload.analysis_mode
+    job.status = JobStatus.PENDING.value
+    job.stage = "等待重新分析"
+    job.progress = 90
+    job.message = "保留采集数据，仅重新运行舆情模型"
+    job.warnings = [
+        warning
+        for warning in (job.warnings or [])
+        if not warning.startswith(("GPT-5.6", "LLM 增强", "本地模型"))
+    ]
+    job.cancel_requested = False
+    job.finished_at = None
+    job.collection_metrics = {
+        **(job.collection_metrics or {}),
+        "analysis_only": True,
+    }
+    await session.commit()
+    await session.refresh(job)
+    await runner.enqueue(job.id, analysis_only=True)
+    return job
 
 
 @app.post("/api/v1/jobs/{job_id}/taptap-selection", response_model=JobRead)

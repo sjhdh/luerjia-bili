@@ -28,6 +28,11 @@ export const api = {
   cancelJob: (id: string) => request<Job>(`/api/v1/jobs/${id}/cancel`, { method: "POST" }),
   retryJob: (id: string) => request<Job>(`/api/v1/jobs/${id}/retry`, { method: "POST" }),
   rerunJob: (id: string) => request<Job>(`/api/v1/jobs/${id}/rerun`, { method: "POST" }),
+  reanalyzeJob: (id: string, analysisMode: "local" | "enhanced" = "enhanced") =>
+    request<Job>(`/api/v1/jobs/${id}/reanalyze`, {
+      method: "POST",
+      body: JSON.stringify({ analysis_mode: analysisMode })
+    }),
   selectTapTap: (id: string, appId: string) =>
     request<Job>(`/api/v1/jobs/${id}/taptap-selection`, {
       method: "POST",

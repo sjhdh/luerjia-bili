@@ -76,6 +76,7 @@ export interface ProxySettings {
   latency_ms: number | null;
   last_checked_at: string | null;
   last_error: string | null;
+  target_results: Record<string, boolean>;
   pool_api: string;
 }
 
@@ -86,6 +87,7 @@ export interface ProxyCheck {
   exit_ip: string | null;
   message: string;
   checked_at: string;
+  targets: Record<string, boolean>;
 }
 
 export interface ShareLink {
@@ -159,14 +161,47 @@ export interface ReportPayload {
   keywords: Array<{ word: string; count: number; negative_ratio: number }>;
   tags: Array<{ name: string; count: number }>;
   topics: Array<{
-    id: number;
+    id: string | number;
     name: string;
     keywords: string[];
     size: number;
     negative_ratio: number;
     risk_score: number;
     samples: string[];
+    weighted_negative?: number;
   }>;
+  analysis?: {
+    mode: "local" | "enhanced";
+    sentiment_source: string;
+    llm_model?: string;
+    prompt_version?: string;
+    llm_coverage?: number;
+    llm_covered_count?: number;
+    llm_unique_input_count?: number;
+    llm_batch_count?: number;
+    local_llm_agreement?: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    report_generated?: boolean;
+  };
+  ai_analysis?: {
+    executive_summary: string;
+    findings: Array<{ title: string; detail: string; evidence_ids?: number[] }>;
+    risks: Array<{ title: string; detail: string; evidence_ids?: number[] }>;
+    actions: Array<{ priority: "P0" | "P1" | "P2"; title: string; rationale: string; action: string }>;
+    caveats: string[];
+    evidence?: Array<{
+      id: number;
+      text: string;
+      sentiment: string;
+      confidence: number | null;
+      likes: number;
+      source_scope: string;
+      topics: string[];
+    }>;
+    model: string;
+    prompt_version: string;
+  } | null;
   samples: Record<"positive" | "neutral" | "negative", Sample[]>;
   videos: VideoRow[];
   official_account?: {
@@ -186,6 +221,11 @@ export interface ReportPayload {
     confusion: number[][];
     model: string;
     revision: string;
+    sentiment_source?: string;
+    llm_coverage?: number;
+    llm_covered_count?: number;
+    local_llm_agreement?: number;
+    prompt_version?: string;
   };
   summary: {
     overview: string;

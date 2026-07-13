@@ -1,11 +1,11 @@
 import time
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
 from backend.app.database import SessionLocal
-from backend.app.main import app, browser
-from backend.app.models import Job, Report, ReportShare
+from backend.app.main import app, browser, runner
+from backend.app.models import ACTIVE_JOB_STATUSES, ContentItem, Job, Report, ReportShare
 from backend.app.services.proxy import ProxyCheck
 
 
@@ -108,6 +108,77 @@ def test_proxy_configuration_api(monkeypatch) -> None:
         assert checked.status_code == 200
         assert checked.json()["reachable"] is True
         assert checked.json()["exit_ip"] == "203.0.113.20"
+
+
+async def test_reanalysis_reuses_collected_content_without_recollection(monkeypatch) -> None:
+    queued: list[tuple[str, bool]] = []
+
+    async def enqueue(job_id: str, *, analysis_only: bool = False) -> None:
+        queued.append((job_id, analysis_only))
+
+    monkeypatch.setattr(runner, "enqueue", enqueue)
+    with TestClient(app) as client:
+        async with SessionLocal() as session:
+            await session.execute(
+                update(Job)
+                .where(Job.status.in_([status.value for status in ACTIVE_JOB_STATUSES]))
+                .values(status="completed", stage="测试清理", progress=100)
+            )
+            job = Job(
+                id="reanalyze-existing-job",
+                keyword="失控进化",
+                status="completed",
+                analysis_mode="local",
+                include_discovery=True,
+                include_taptap=False,
+            )
+            session.add(job)
+            session.add(
+                ContentItem(
+                    job_id=job.id,
+                    platform="bilibili",
+                    kind="comment",
+                    source_scope="bilibili_discovery",
+                    external_id="existing-comment",
+                    author_hash="匿名用户 #0001",
+                    text="掉帧问题已经修复，现在很流畅",
+                )
+            )
+            session.add(Report(job_id=job.id, payload={"id": job.id, "version": "before"}))
+            await session.commit()
+
+        response = client.post(
+            "/api/v1/jobs/reanalyze-existing-job/reanalyze",
+            json={"analysis_mode": "enhanced"},
+        )
+        assert response.status_code == 200
+        assert response.json()["analysis_mode"] == "enhanced"
+        assert response.json()["progress"] == 90
+        assert response.json()["collection_metrics"]["analysis_only"] is True
+        assert ("reanalyze-existing-job", True) in queued
+
+        async with SessionLocal() as session:
+            stored_job = await session.get(Job, "reanalyze-existing-job")
+            assert stored_job is not None
+            stored_job.status = "cancelled"
+            await session.commit()
+
+        retried = client.post("/api/v1/jobs/reanalyze-existing-job/retry")
+        assert retried.status_code == 200
+        assert retried.json()["collection_metrics"]["analysis_only"] is True
+
+        async with SessionLocal() as session:
+            content_count = await session.scalar(
+                select(func.count(ContentItem.id)).where(
+                    ContentItem.job_id == "reanalyze-existing-job"
+                )
+            )
+            report = await session.scalar(
+                select(Report).where(Report.job_id == "reanalyze-existing-job")
+            )
+            assert content_count == 1
+            assert report is not None
+            assert report.payload["version"] == "before"
 
 
 async def test_report_share_is_opaque_read_only_and_revocable() -> None:

@@ -19,11 +19,14 @@ export default function BrowserWorkspace({ platform, open, onClose, onSession }:
   const dragging = useRef(false);
   const lastMove = useRef(0);
   const inputQueue = useRef<Promise<void>>(Promise.resolve());
+  const onSessionRef = useRef(onSession);
+
+  useEffect(() => { onSessionRef.current = onSession; }, [onSession]);
 
   const updateSession = useCallback((next: BrowserSession) => {
     setSession(next);
-    onSession?.(next);
-  }, [onSession]);
+    onSessionRef.current?.(next);
+  }, []);
 
   const send = useCallback((payload: Record<string, unknown>) => {
     inputQueue.current = inputQueue.current
@@ -36,6 +39,7 @@ export default function BrowserWorkspace({ platform, open, onClose, onSession }:
     if (!open) return;
     let active = true;
     let objectUrl = "";
+    let frameTimer = 0;
     setLoading(true);
     setError("");
     void api.openWorkspace(platform).then((next) => {
@@ -47,22 +51,28 @@ export default function BrowserWorkspace({ platform, open, onClose, onSession }:
         if (!response.ok) throw new Error("页面画面暂不可用");
         const nextUrl = URL.createObjectURL(await response.blob());
         if (!active) { URL.revokeObjectURL(nextUrl); return; }
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        const image = new Image();
+        image.src = nextUrl;
+        await image.decode();
+        if (!active) { URL.revokeObjectURL(nextUrl); return; }
+        const previousUrl = objectUrl;
         objectUrl = nextUrl;
         setFrame(nextUrl);
         setLoading(false);
+        if (previousUrl) window.requestAnimationFrame(() => URL.revokeObjectURL(previousUrl));
       } catch (err) {
         if (active) setError((err as Error).message);
+      } finally {
+        if (active) frameTimer = window.setTimeout(() => void refreshFrame(), 900);
       }
     }
     void refreshFrame();
-    const timer = window.setInterval(() => void refreshFrame(), 850);
     const stateTimer = window.setInterval(() => {
       void api.platformSession(platform).then((next) => active && updateSession(next)).catch(() => undefined);
     }, 2500);
     return () => {
       active = false;
-      window.clearInterval(timer);
+      window.clearTimeout(frameTimer);
       window.clearInterval(stateTimer);
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };

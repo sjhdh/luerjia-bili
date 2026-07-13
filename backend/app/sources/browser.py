@@ -5,6 +5,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 
@@ -93,13 +94,21 @@ class BilibiliBrowserManager:
         session = self._sessions[platform]
         async with session.lock:
             page = session.workspace_page
+            should_navigate = False
             if page is None or page.is_closed():
                 blank = [item for item in context.pages if item.url in {"", "about:blank"}]
                 page = blank[0] if blank else await context.new_page()
                 session.workspace_page = page
-            session.risk_detected = False
-            await page.goto(LOGIN_URLS[platform], wait_until="domcontentloaded", timeout=45_000)
-            if platform == "taptap":
+                should_navigate = True
+            else:
+                hostname = (urlsplit(page.url).hostname or "").casefold()
+                expected_host = "bilibili.com" if platform == "bilibili" else "taptap.cn"
+                on_platform = hostname == expected_host or hostname.endswith(f".{expected_host}")
+                should_navigate = not session.risk_detected and not on_platform
+            if should_navigate:
+                session.risk_detected = False
+                await page.goto(LOGIN_URLS[platform], wait_until="domcontentloaded", timeout=45_000)
+            if platform == "taptap" and should_navigate:
                 await page.wait_for_timeout(1_000)
                 account_trigger = page.locator(".user-avatar-with-menu").first
                 if await account_trigger.count():
@@ -200,7 +209,7 @@ class BilibiliBrowserManager:
             page = self._sessions[platform].workspace_page
         assert page is not None
         async with session.lock:
-            return await page.screenshot(type="jpeg", quality=72, animations="disabled")
+            return await page.screenshot(type="jpeg", quality=75)
 
     async def browser_input(
         self,

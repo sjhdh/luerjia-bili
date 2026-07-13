@@ -62,6 +62,27 @@ function fallbackSection(report: ReportPayload, key: ReportSection["key"], label
   return { key, label, available, metrics: { sample_count: distribution.total, comment_count: isTapTap ? 0 : report.metrics.comment_count, nested_reply_count: 0, danmaku_count: isTapTap ? 0 : report.metrics.danmaku_count, review_count: isTapTap ? report.metrics.review_count : 0, video_count: isTapTap ? 0 : report.metrics.video_count }, sentiment: distribution, timeline: report.timeline, keywords: report.keywords, topics: report.topics, samples: { positive: report.samples.positive.filter((item) => isTapTap ? item.platform === "taptap" : item.platform === "bilibili"), neutral: report.samples.neutral.filter((item) => isTapTap ? item.platform === "taptap" : item.platform === "bilibili"), negative: report.samples.negative.filter((item) => isTapTap ? item.platform === "taptap" : item.platform === "bilibili") }, videos: isTapTap ? [] : report.videos, summary: report.summary, rating_distribution: isTapTap ? report.rating_distribution : undefined, tags: isTapTap ? report.tags : undefined };
 }
 
+function AIReport({ report }: { report: ReportPayload }) {
+  const analysis = report.ai_analysis;
+  if (!analysis) return null;
+  const coverage = report.analysis?.llm_coverage;
+  const evidence = new Map((analysis.evidence || []).map((item) => [item.id, item]));
+  const Evidence = ({ ids }: { ids?: number[] }) => {
+    const rows = (ids || []).map((id) => evidence.get(id)).filter((item) => item != null).slice(0, 2);
+    return rows.length ? <div className="ai-evidence-list">{rows.map((item) => <blockquote key={item.id}><p>{item.text}</p><span>证据 #{item.id} · {item.source_scope === "bilibili_official" ? "B站官号" : item.source_scope === "bilibili_discovery" ? "B站相关视频" : "TapTap"} · {compact.format(item.likes)} 赞</span></blockquote>)}</div> : null;
+  };
+  return <section className="ai-analysis-section">
+    <header className="ai-analysis-header"><div><p className="panel-kicker">GPT-5.6 COMPOSITE REVIEW</p><h2><Sparkles size={21} />AI 深度研判</h2></div><div className="ai-analysis-meta"><span>{analysis.model}</span>{coverage != null && <strong>文本覆盖 {(coverage * 100).toFixed(1)}%</strong>}<small>{analysis.prompt_version}</small></div></header>
+    <p className="ai-executive-summary">{analysis.executive_summary}</p>
+    <div className="ai-insight-grid">
+      <section className="ai-insight-list finding-list"><div className="panel-heading"><h3>关键发现</h3><p>基于统计与高互动证据</p></div>{analysis.findings.map((item, index) => <article key={`${item.title}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{item.title}</strong><p>{item.detail}</p><Evidence ids={item.evidence_ids} /></div></article>)}</section>
+      <section className="ai-insight-list risk-list-ai"><div className="panel-heading"><h3>重点风险</h3><p>风险排序不是用户概率</p></div>{analysis.risks.map((item, index) => <article key={`${item.title}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{item.title}</strong><p>{item.detail}</p><Evidence ids={item.evidence_ids} /></div></article>)}</section>
+    </div>
+    <section className="ai-action-plan"><div className="panel-heading"><h3>行动优先级</h3><p>产品、运营与社区治理</p></div>{analysis.actions.map((item, index) => <article key={`${item.priority}-${item.title}-${index}`}><b className={`priority priority-${item.priority.toLowerCase()}`}>{item.priority}</b><div><strong>{item.title}</strong><p>{item.rationale}</p></div><span>{item.action}</span></article>)}</section>
+    {analysis.caveats.length > 0 && <footer className="ai-caveats"><ShieldAlert size={17} /><div><strong>解读边界</strong><p>{analysis.caveats.join("；")}</p></div></footer>}
+  </section>;
+}
+
 export default function ReportPage() {
   const { jobId = "", shareToken = "" } = useParams();
   const shared = Boolean(shareToken);
@@ -116,7 +137,8 @@ export default function ReportPage() {
     <div className="report-grid two-columns"><ChartPanel title="跨平台情感占比" subtitle="B站与 TapTap 平台等权" option={sentimentOption(report.sentiment.overall.items)} /><section className="summary-section overall-summary"><div className="summary-title"><Sparkles size={22} /><div><h2>综合结论</h2><p>{report.summary.enhanced ? "LLM 增强" : "本地模型"}</p></div></div><p className="summary-overview">{report.summary.overview}</p><div className="summary-lines"><p><Heart size={16} />{report.summary.positives.slice(0, 2).join("；")}</p><p><AlertTriangle size={16} />{report.summary.risks.slice(0, 2).join("；")}</p><p><MessageCircle size={16} />{report.summary.recommendations.slice(0, 2).join("；")}</p></div></section></div>
     <nav className="report-source-nav no-print">{sections.map((section) => <a key={section.key} href={`#${section.key}`} className={section.available ? "" : "disabled"}><span className={`source-dot source-${section.key === "taptap" ? "taptap" : "bilibili"}`} />{section.label}<small>{section.metrics.sample_count}</small></a>)}</nav>
     {sections.map((section) => <SourceSection key={section.key} section={section} />)}
-    <section className="model-section"><div className="panel-heading"><h2>模型质量</h2><p>TapTap 星级标签校准</p></div><div className="model-metrics"><span><strong>{report.model_quality.sample_size}</strong>校准样本</span><span><strong>{report.model_quality.accuracy != null ? `${(report.model_quality.accuracy * 100).toFixed(1)}%` : "--"}</strong>准确率</span><span><strong>{report.model_quality.macro_f1 != null ? report.model_quality.macro_f1.toFixed(3) : "--"}</strong>Macro F1</span></div><small>{report.model_quality.model} · {report.model_quality.revision.slice(0, 12)}</small></section>
+    <AIReport report={report} />
+    <section className="model-section"><div className="panel-heading"><h2>分析质量</h2><p>{report.model_quality.llm_coverage != null ? "GPT-5.6 覆盖与本地基线一致性" : "TapTap 星级标签校准"}</p></div><div className="model-metrics">{report.model_quality.llm_coverage != null ? <><span><strong>{(report.model_quality.llm_coverage * 100).toFixed(1)}%</strong>GPT 覆盖</span><span><strong>{report.model_quality.local_llm_agreement != null ? `${(report.model_quality.local_llm_agreement * 100).toFixed(1)}%` : "--"}</strong>本地一致率</span><span><strong>{report.model_quality.llm_covered_count ?? 0}</strong>复核文本</span></> : <><span><strong>{report.model_quality.sample_size}</strong>校准样本</span><span><strong>{report.model_quality.accuracy != null ? `${(report.model_quality.accuracy * 100).toFixed(1)}%` : "--"}</strong>准确率</span><span><strong>{report.model_quality.macro_f1 != null ? report.model_quality.macro_f1.toFixed(3) : "--"}</strong>Macro F1</span></>}</div><small>{report.model_quality.model} · {report.model_quality.revision.slice(0, 24)}</small></section>
     <footer className="methodology"><h2>合规与方法说明</h2>{Object.values(report.methodology).map((text) => <p key={text}>{text}</p>)}</footer>
     {share && <div className="share-overlay no-print" role="dialog" aria-modal="true" aria-label="报告分享"><section className="share-dialog"><button className="icon-button share-close" title="关闭" onClick={() => setShare(null)}><X size={18} /></button><div className="share-icon"><Share2 size={22} /></div><h2>只读分享链接</h2><p>链接于 {new Date(share.expires_at).toLocaleString("zh-CN")} 过期。</p><div className="share-value"><input readOnly value={share.url} /><button className="button primary" onClick={() => void copyShare()}>{copied ? <Check size={17} /> : <Copy size={17} />}{copied ? "已复制" : "复制"}</button></div><small><ShieldAlert size={14} />仅包含匿名化报告，不开放原始 CSV。</small></section></div>}
   </article>;
