@@ -3,6 +3,7 @@ from pathlib import Path
 
 from backend.app.sources.base import CollectedApp, CollectedVideo
 from backend.app.sources.parsers import (
+    _visible_datetime,
     parse_bilibili_search_html,
     parse_bilibili_space_html,
     parse_bilibili_video_html,
@@ -47,6 +48,14 @@ def test_bilibili_space_parser_extracts_official_videos_and_dates() -> None:
     assert [row.external_id for row in rows] == ["BV1OFFICIAL1", "BV1OFFICIAL2"]
     assert all(row.source_scope == "bilibili_official" for row in rows)
     assert rows[0].published_at == datetime(2026, 7, 10, tzinfo=timezone.utc)
+
+
+def test_visible_date_parser_tolerates_invalid_and_leap_day_values() -> None:
+    now = datetime(2026, 7, 13, tzinfo=timezone.utc)
+    assert _visible_datetime("发布于 2026-02-30", now) is None
+    assert _visible_datetime("发布于 02-29", now) == datetime(
+        2024, 2, 29, tzinfo=timezone.utc
+    )
 
 
 def test_taptap_parser_extracts_rating_tags_and_reviews() -> None:

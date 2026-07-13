@@ -93,12 +93,26 @@ def _visible_datetime(value: str, now: datetime | None = None) -> datetime | Non
     normalized = " ".join(value.strip().split())
     match = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", normalized)
     if match:
-        return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)), tzinfo=timezone.utc)
+        try:
+            return datetime(
+                int(match.group(1)),
+                int(match.group(2)),
+                int(match.group(3)),
+                tzinfo=timezone.utc,
+            )
+        except ValueError:
+            return None
     match = re.search(r"(?<!\d)(\d{1,2})[-/.月](\d{1,2})(?:日)?(?!\d)", normalized)
     if match:
-        year = current.year
-        parsed = datetime(year, int(match.group(1)), int(match.group(2)), tzinfo=timezone.utc)
-        return parsed.replace(year=year - 1) if parsed > current + timedelta(days=2) else parsed
+        month, day = int(match.group(1)), int(match.group(2))
+        for year in range(current.year, current.year - 5, -1):
+            try:
+                parsed = datetime(year, month, day, tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if parsed <= current + timedelta(days=2):
+                return parsed
+        return None
     relative = re.search(r"(\d+)\s*(分钟|小时|天|周|个月|月)前", normalized)
     if relative:
         amount = int(relative.group(1))
