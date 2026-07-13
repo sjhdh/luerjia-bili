@@ -146,6 +146,9 @@ class JobRunner:
             if not job or job.cancel_requested:
                 return
             bili_complete = bool((job.collection_metrics or {}).get("bilibili_complete"))
+            official_phase_complete = bool(
+                (job.collection_metrics or {}).get("official_phase_complete")
+            )
             official_videos = list(
                 (
                     await session.scalars(
@@ -184,6 +187,8 @@ class JobRunner:
                     include_discovery=job.include_discovery,
                     persist=lambda result: self._persist_result(job_id, result),
                     resume_comment_counts=resume_comment_counts,
+                    official_phase_complete=official_phase_complete,
+                    existing_official_ids={video.external_id for video in official_videos},
                 )
             except SourcePaused as exc:
                 await self._set_status(

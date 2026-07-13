@@ -23,7 +23,7 @@ def parse_human_count(value: str | int | None) -> int:
     if isinstance(value, int):
         return value
     text = value.strip().replace(",", "")
-    match = re.search(r"([\d.]+)\s*([万亿]?)", text)
+    match = re.search(r"(\d+(?:\.\d+)?)\s*([万亿]?)", text)
     if not match:
         return 0
     amount = float(match.group(1))

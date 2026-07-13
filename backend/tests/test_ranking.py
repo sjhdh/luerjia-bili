@@ -18,6 +18,7 @@ def test_human_counts() -> None:
     assert parse_human_count("12.3万") == 123_000
     assert parse_human_count("1.2亿") == 120_000_000
     assert parse_human_count("456") == 456
+    assert parse_human_count("...") == 0
 
 
 def test_rank_videos_prioritizes_relevance_and_engagement() -> None:

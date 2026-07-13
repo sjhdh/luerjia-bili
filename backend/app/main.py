@@ -443,7 +443,13 @@ async def retry_job(job_id: str, session: AsyncSession = Depends(get_session)) -
         raise HTTPException(status_code=409, detail="请先选择 TapTap 应用")
     preserve_checkpoint = bool(
         job.status == JobStatus.AWAITING_LOGIN.value
-        or (job.official_mid and (job.collection_metrics or {}).get("official_checkpoint"))
+        or (
+            job.official_mid
+            and (
+                (job.collection_metrics or {}).get("official_checkpoint")
+                or (job.collection_metrics or {}).get("official_phase_complete")
+            )
+        )
     )
     if not preserve_checkpoint:
         await _clear_job_results(job_id, session)
