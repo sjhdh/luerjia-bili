@@ -4,9 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "luerjia-bili"
-version = "0.1.0"
-description = "Local-first Bilibili and TapTap sentiment analysis tool"
-requires-python = ">=3.12"
+version = "0.2.0"
+description = "Private Bilibili and TapTap sentiment analysis tool"
+requires-python = ">=3.11"
 dependencies = [
   "alembic>=1.14,<2",
   "aiosqlite>=0.20,<1",

@@ -9,13 +9,16 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from playwright.async_api import HttpCredentials
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import ROOT_DIR, get_settings
 from .database import get_session, init_database
 from .models import ACTIVE_JOB_STATUSES, ContentItem, Job, JobStatus, Report, SourceApp, Video
 from .schemas import BrowserSessionRead, HealthRead, JobCreate, JobRead, TapTapSelection
+from .security import SharedAccessMiddleware
 from .services.exporter import build_csv, build_pdf
 from .services.job_runner import init_job_runner
 from .sources.browser import init_browser_manager
@@ -37,9 +40,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+if settings.admin_password_value:
+    app.add_middleware(
+        SharedAccessMiddleware,
+        username=settings.admin_username,
+        password=settings.admin_password_value,
+        exempt_paths={"/api/v1/health"},
+    )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,19 +65,42 @@ async def health() -> HealthRead:
         llm_configured=bool(
             settings.openai_base_url and settings.openai_api_key and settings.openai_model
         ),
+        deployment_mode=settings.deployment_mode,
+        access_protected=bool(settings.admin_password_value),
+    )
+
+
+async def _browser_session_response(message: str | None = None) -> BrowserSessionRead:
+    running, authenticated = await browser.session_state()
+    qr_ready, qr_expires_at = browser.qr_state()
+    if authenticated:
+        resolved_message = "B站登录态可用"
+    elif message:
+        resolved_message = message
+    elif qr_ready:
+        resolved_message = "请使用哔哩哔哩客户端扫码确认"
+    elif settings.login_method == "qr":
+        resolved_message = "尚未生成登录二维码"
+    else:
+        resolved_message = "浏览器未连接或尚未登录"
+    return BrowserSessionRead(
+        running=running,
+        authenticated=authenticated,
+        login_method=settings.login_method,
+        qr_ready=qr_ready,
+        qr_expires_at=qr_expires_at,
+        message=resolved_message,
     )
 
 
 @app.post("/api/v1/bilibili/login-window", response_model=BrowserSessionRead)
 async def open_bilibili_login() -> BrowserSessionRead:
     try:
+        if settings.login_method == "qr":
+            await browser.start_qr_login()
+            return await _browser_session_response("登录二维码已生成")
         await browser.connect(open_login=True)
-        running, authenticated = await browser.session_state()
-        return BrowserSessionRead(
-            running=running,
-            authenticated=authenticated,
-            message="已打开 B站登录窗口" if not authenticated else "B站登录态可用",
-        )
+        return await _browser_session_response("已打开 B站登录窗口")
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -74,17 +108,44 @@ async def open_bilibili_login() -> BrowserSessionRead:
         ) from exc
 
 
+@app.post("/api/v1/bilibili/qr-login", response_model=BrowserSessionRead)
+async def start_bilibili_qr_login() -> BrowserSessionRead:
+    try:
+        await browser.start_qr_login()
+        return await _browser_session_response("登录二维码已生成")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"无法生成 B站登录二维码：{type(exc).__name__}",
+        ) from exc
+
+
+@app.get("/api/v1/bilibili/qr-code.png", response_class=Response)
+async def get_bilibili_qr_code() -> Response:
+    image = browser.qr_image()
+    if image is None:
+        raise HTTPException(status_code=410, detail="登录二维码不存在或已过期，请重新生成")
+    return Response(
+        image,
+        media_type="image/png",
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+    )
+
+
 @app.get("/api/v1/bilibili/session", response_model=BrowserSessionRead)
 async def get_bilibili_session() -> BrowserSessionRead:
-    running, authenticated = await browser.session_state()
-    message = "B站登录态可用" if authenticated else "浏览器未连接或尚未登录"
-    return BrowserSessionRead(running=running, authenticated=authenticated, message=message)
+    return await _browser_session_response()
 
 
 @app.delete("/api/v1/bilibili/session", response_model=BrowserSessionRead)
 async def clear_bilibili_session() -> BrowserSessionRead:
     await browser.clear_profile()
-    return BrowserSessionRead(running=False, authenticated=False, message="本地 B站登录资料已清除")
+    return BrowserSessionRead(
+        running=False,
+        authenticated=False,
+        login_method=settings.login_method,
+        message="B站登录资料已清除",
+    )
 
 
 @app.post("/api/v1/jobs", response_model=JobRead, status_code=201)
@@ -104,7 +165,9 @@ async def create_job(payload: JobCreate, session: AsyncSession = Depends(get_ses
 
 @app.get("/api/v1/jobs", response_model=list[JobRead])
 async def list_jobs(session: AsyncSession = Depends(get_session)) -> list[Job]:
-    return list((await session.scalars(select(Job).order_by(Job.created_at.desc()).limit(100))).all())
+    return list(
+        (await session.scalars(select(Job).order_by(Job.created_at.desc()).limit(100))).all()
+    )
 
 
 @app.get("/api/v1/jobs/{job_id}", response_model=JobRead)
@@ -123,7 +186,7 @@ async def job_events(job_id: str) -> StreamingResponse:
             async with runner_session() as session:
                 job = await session.get(Job, job_id)
                 if not job:
-                    yield "event: error\ndata: {\"detail\":\"任务不存在\"}\n\n"
+                    yield 'event: error\ndata: {"detail":"任务不存在"}\n\n'
                     return
                 current = (job.status, job.stage, job.progress, job.message, job.updated_at)
                 if current != last:
@@ -276,10 +339,23 @@ async def export_csv(job_id: str, session: AsyncSession = Depends(get_session)) 
 
 
 @app.get("/api/v1/reports/{job_id}/export.pdf")
-async def export_pdf(job_id: str, request: Request, session: AsyncSession = Depends(get_session)) -> Response:
+async def export_pdf(
+    job_id: str, request: Request, session: AsyncSession = Depends(get_session)
+) -> Response:
     await _get_report(job_id, session)
     try:
-        content = await build_pdf(job_id, str(request.base_url))
+        credentials: HttpCredentials | None = None
+        if settings.admin_password_value:
+            credentials = {
+                "username": settings.admin_username,
+                "password": settings.admin_password_value,
+            }
+        content = await build_pdf(
+            job_id,
+            settings.pdf_base_url or str(request.base_url),
+            http_credentials=credentials,
+            executable_path=settings.browser_executable_path,
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -302,10 +378,17 @@ if assets_dir.exists():
 async def spa_fallback(full_path: str) -> Response:
     index = frontend_dist / "index.html"
     requested = frontend_dist / full_path
-    if full_path and requested.is_file() and requested.resolve().is_relative_to(frontend_dist.resolve()):
+    if (
+        full_path
+        and requested.is_file()
+        and requested.resolve().is_relative_to(frontend_dist.resolve())
+    ):
         return FileResponse(requested)
     if index.exists():
         return FileResponse(index)
     return JSONResponse(
-        {"name": settings.app_name, "detail": "前端尚未构建，请运行 npm run dev 或 scripts/setup.ps1"}
+        {
+            "name": settings.app_name,
+            "detail": "前端尚未构建，请运行 npm run dev 或 scripts/setup.ps1",
+        }
     )

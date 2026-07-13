@@ -16,7 +16,7 @@ function AppShell() {
         </Link>
         <nav className="nav-links" aria-label="主导航">
           <NavLink to="/" end><Home size={17} /><span>任务</span></NavLink>
-          <span className="nav-disabled" title="数据保存在本机"><Database size={17} /><span>本地数据</span></span>
+          <span className="nav-disabled" title="数据保存在当前私有实例"><Database size={17} /><span>实例数据</span></span>
           <span className="nav-disabled" title="通过环境变量配置"><Settings size={17} /><span>设置</span></span>
         </nav>
       </header>

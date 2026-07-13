@@ -50,6 +50,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .connection strong, .connection small { display: block; }
 .connection strong { font-size: 14px; }
 .connection small { margin-top: 2px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qr-login-panel { min-height: 238px; margin-bottom: 22px; padding: 24px; display: grid; grid-template-columns: 190px minmax(0, 1fr); align-items: center; gap: 28px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+.qr-image-wrap { width: 190px; height: 190px; display: grid; place-items: center; padding: 16px; background: white; border: 1px solid #cfdad5; border-radius: 8px; }
+.qr-image-wrap img { width: 156px; height: 156px; object-fit: contain; image-rendering: crisp-edges; }
+.qr-image-wrap.expired { color: #95a19c; background: #f2f5f4; border-style: dashed; }
+.qr-login-copy { min-width: 0; }
+.qr-login-copy .eyebrow { display: flex; align-items: center; gap: 6px; }
+.qr-login-copy h2 { margin-bottom: 9px; font-size: 20px; letter-spacing: 0; }
+.qr-login-copy > p:not(.eyebrow) { max-width: 580px; margin-bottom: 20px; color: var(--muted); line-height: 1.65; }
+.qr-login-actions { display: flex; align-items: center; gap: 16px; }
+.qr-login-actions > span { min-width: 92px; color: var(--green-700); font-size: 13px; font-weight: 750; font-variant-numeric: tabular-nums; }
 .button, .icon-button { border: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: background .16s ease, color .16s ease, border-color .16s ease, transform .16s ease; }
 .button { min-height: 38px; gap: 8px; padding: 0 15px; border-radius: 6px; font-weight: 700; font-size: 14px; }
 .button:hover:not(:disabled), .icon-button:hover:not(:disabled) { transform: translateY(-1px); }
@@ -218,6 +228,9 @@ td small { color: var(--muted); margin-top: 3px; }
   .workspace-header { display: block; }
   .workspace h1 { font-size: 25px; }
   .connection { width: 100%; min-width: 0; margin-top: 16px; }
+  .qr-login-panel { grid-template-columns: 158px minmax(0, 1fr); gap: 20px; padding: 20px; }
+  .qr-image-wrap { width: 158px; height: 158px; padding: 12px; }
+  .qr-image-wrap img { width: 132px; height: 132px; }
   .task-composer, .task-history, .candidate-section { padding: 17px; }
   .task-form { display: flex; flex-direction: column; align-items: stretch; }
   .field, .start-button { width: 100%; }
@@ -242,9 +255,15 @@ td small { color: var(--muted); margin-top: 3px; }
 }
 
 @media (max-width: 430px) {
-  .connection { flex-wrap: wrap; }
-  .connection > div { min-width: calc(100% - 24px); }
-  .connection .button { width: 100%; }
+  .connection { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; }
+  .connection > div { min-width: 0; }
+  .connection .button { width: 100%; grid-column: 1 / -1; }
+  .qr-login-panel { display: flex; flex-direction: column; align-items: stretch; }
+  .qr-image-wrap { align-self: center; }
+  .qr-login-copy { text-align: center; }
+  .qr-login-copy .eyebrow, .qr-login-actions { justify-content: center; }
+  .qr-login-actions { flex-direction: column; gap: 10px; }
+  .qr-login-actions .button { width: 100%; }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
   .job-actions { align-items: stretch; flex-direction: column; }
   .job-actions .button { width: 100%; }

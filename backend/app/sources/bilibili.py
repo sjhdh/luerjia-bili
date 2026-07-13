@@ -110,6 +110,8 @@ class BilibiliVisibleSource:
         signals = (title + " " + text).casefold()
         risk_signals = ("-352", "风控", "安全验证", "完成验证", "验证码", "captcha")
         if any(signal in signals for signal in risk_signals):
+            if self.settings.login_method == "qr":
+                raise SourcePaused("B站触发验证或风控，服务器已暂停采集，请稍后重新扫码并重试")
             raise SourcePaused("B站触发验证或风控，请在登录窗口中处理后重试")
 
     async def collect(
@@ -122,6 +124,8 @@ class BilibiliVisibleSource:
     ) -> CollectionResult:
         running, authenticated = await self.manager.session_state()
         if not running or not authenticated:
+            if self.settings.login_method == "qr":
+                raise SourcePaused("请先生成 B站登录二维码，并使用哔哩哔哩客户端扫码确认")
             raise SourcePaused("请先点击“连接 B站”并在浏览器窗口中完成登录")
         config = DEPTHS.get(depth, DEPTHS["standard"])
         context = await self.manager.connect(open_login=False)

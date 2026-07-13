@@ -34,7 +34,10 @@ class TapTapVisibleSource:
     ) -> CollectionResult:
         review_limit = REVIEW_LIMITS.get(depth, REVIEW_LIMITS["standard"])
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=True)
+            browser = await playwright.chromium.launch(
+                headless=True,
+                executable_path=self.settings.browser_executable_path,
+            )
             context = await browser.new_context(
                 viewport={"width": 1440, "height": 900}, locale="zh-CN"
             )

@@ -1,18 +1,18 @@
 # 路尔嘉舆情分析
 
-本机运行的 B站 + TapTap 舆情分析工具。它通过用户可见网页低频采集视频、评论、弹幕列表和 TapTap 评价，在本机完成情感分类、主题聚类、风险排序与报告导出。
+面向单一操作者的 B站 + TapTap 舆情分析工具。它通过用户可见网页低频采集视频、评论、弹幕列表和 TapTap 评价，完成情感分类、主题聚类、风险排序与报告导出。既可在 Windows 本机运行，也可作为受保护的 Linux 私有服务部署。
 
 ## 边界
 
-- 服务仅绑定 `127.0.0.1`，没有用户系统或公网分享。
-- B站 Cookie 只存在于 `data/browser-profile/` 的 Chromium 配置中，不进入数据库、日志、API 或导出文件。
+- 应用进程始终只绑定 `127.0.0.1`；服务器模式通过 nginx HTTPS 反向代理，并强制使用共享访问口令。
+- B站 Cookie 只存在于浏览器配置目录中，不进入数据库、日志、API 或导出文件。服务器目录仅允许专用系统用户读取。
 - 只读取登录用户能够看到的网页内容，不调用隐藏接口，不绕过验证码、WBI 或风控。
 - 页面出现验证码、`-352` 或结构无法识别时，任务暂停并等待人工处理。
 
 ## 环境
 
-- Windows 10/11
-- Python 3.12+
+- Windows 10/11 或带 systemd 的 Linux 服务器
+- Python 3.11+
 - Node.js 22+
 - 首次安装和首次下载本地模型时需要网络
 
@@ -33,6 +33,34 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 前端运行在 `http://127.0.0.1:5173`，API 仍在 `http://127.0.0.1:8000`。
+
+## Linux 私有部署
+
+服务器模式使用无头 Chromium 打开 B站官方登录页，将页面上的二维码作为短时 PNG 返回给工作台。操作者使用哔哩哔哩客户端扫码确认，登录 Cookie 只保存在服务器的 `/var/lib/autobili/data/browser-profile/`。
+
+推荐目录：
+
+- 程序：`/opt/autobili`
+- 数据、模型与浏览器：`/var/lib/autobili`
+- 私密配置：`/etc/autobili.env`
+- 服务：`autobili.service`
+
+在服务器取得代码并构建前端后：
+
+```bash
+sudo install -o root -g root -m 0755 -d /opt/autobili
+sudo bash deploy/install.sh
+```
+
+首次安装会生成并显示一次独立的随机访问口令，同时以 `root:autobili 0640` 保存到 `/etc/autobili.env`。`DEPLOYMENT_MODE=server` 时 `ADMIN_PASSWORD` 不能为空，应用会拒绝在没有访问口令的情况下启动。需要改口令时编辑 `/etc/autobili.env` 并重启 `autobili.service`。
+
+标准 nginx 配置位于 `deploy/nginx-autobili.conf`，脚本同时识别 `/etc/nginx` 和宝塔 `/www/server/panel/vhost/nginx`。确认 `autobili.luerjia.art` 已解析到服务器且 HTTP 可访问后，可用独立 Certbot 环境在不提供邮箱的情况下申请证书并安装自动续期 timer：
+
+```bash
+sudo bash deploy/enable-https.sh
+```
+
+现有 nginx 使用宝塔等自定义目录时，只需把同一虚拟主机内容加入其站点配置，不应覆盖其他域名配置。SSE 路径必须保持 `proxy_buffering off`。
 
 ## 分析口径
 

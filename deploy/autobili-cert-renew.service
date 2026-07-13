@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew Autobili TLS certificate
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/autobili-certbot/bin/certbot renew --quiet
+ExecStartPost=/usr/bin/env nginx -t
+ExecStartPost=/usr/bin/env nginx -s reload
