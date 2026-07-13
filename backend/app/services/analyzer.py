@@ -363,17 +363,23 @@ async def analyze_job(
     official_videos = [video for video in videos if video.source_scope == "bilibili_official"]
     discovery_videos = [video for video in videos if video.source_scope == "bilibili_discovery"]
 
-    def bili_distribution(section_items: list[ContentItem]) -> dict[str, Any]:
+    def bili_section_distribution(section_items: list[ContentItem]) -> dict[str, Any]:
         return _blend_bilibili(
             _distribution([item for item in section_items if item.kind == "comment"]),
             _distribution([item for item in section_items if item.kind == "danmaku"]),
         )
 
-    official_distribution = bili_distribution(official_items)
-    discovery_distribution = bili_distribution(discovery_items)
-    bili_distribution = _blend_bilibili(_distribution(comments), _distribution(danmakus))
+    official_distribution = bili_section_distribution(official_items)
+    discovery_distribution = bili_section_distribution(discovery_items)
+    bili_overall_distribution = _blend_bilibili(
+        _distribution(comments), _distribution(danmakus)
+    )
     taptap_distribution = _distribution(reviews)
-    available = [entry for entry in (bili_distribution, taptap_distribution) if entry["total"]]
+    available = [
+        entry
+        for entry in (bili_overall_distribution, taptap_distribution)
+        if entry["total"]
+    ]
     overall_items = []
     for index, key in enumerate(SENTIMENTS):
         percentage = sum(entry["items"][index]["percentage"] for entry in available) / max(1, len(available))
@@ -596,7 +602,7 @@ async def analyze_job(
         "metrics": metrics,
         "sentiment": {
             "overall": overall,
-            "bilibili": bili_distribution,
+            "bilibili": bili_overall_distribution,
             "bilibili_official": official_distribution,
             "bilibili_discovery": discovery_distribution,
             "taptap": taptap_distribution,

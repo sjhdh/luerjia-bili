@@ -194,6 +194,7 @@ class BilibiliVisibleSource:
         persist: PersistCallback | None = None,
         resume_comment_counts: dict[str, int] | None = None,
     ) -> CollectionResult:
+        resumed_counts = resume_comment_counts or {}
         running, authenticated = await self.manager.session_state("bilibili")
         if not running or not authenticated:
             raise SourcePaused("请先在 B站页面子窗口完成登录")
@@ -212,7 +213,7 @@ class BilibiliVisibleSource:
                     progress,
                     is_cancelled,
                     persist,
-                    resume_comment_counts or {},
+                    resumed_counts,
                 )
                 combined.official_account = official.official_account
                 combined.videos.extend(official.videos)
@@ -252,7 +253,7 @@ class BilibiliVisibleSource:
 
             new_comment_count = sum(item.kind == "comment" for item in combined.contents)
             resumed_comment_count = sum(
-                resume_comment_counts.get(video.external_id, 0)
+                resumed_counts.get(video.external_id, 0)
                 for video in combined.videos
                 if video.source_scope == "bilibili_official"
             )
