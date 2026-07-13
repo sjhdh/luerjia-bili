@@ -167,10 +167,11 @@ td small { color: var(--muted); margin-top: 3px; }
 .metric-neutral strong { color: var(--amber); }
 .metric-negative strong { color: var(--red); }
 .report-grid { display: grid; gap: 16px; margin-bottom: 16px; }
+.report-grid > * { min-width: 0; max-width: 100%; }
 .two-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .report-panel, .risk-section, .sample-section, .video-section, .model-section, .summary-section, .methodology { background: white; border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); padding: 24px; margin-bottom: 16px; }
 .chart-panel { min-width: 0; }
-.chart-root { width: 100%; height: 320px; }
+.chart-root { width: 100%; max-width: 100%; height: 320px; overflow: hidden; }
 .tag-cloud { display: flex; flex-wrap: wrap; gap: 9px; align-content: flex-start; min-height: 290px; }
 .tag-cloud span { min-height: 34px; padding: 0 11px; display: inline-flex; align-items: center; gap: 8px; background: #edf5fb; color: #255c86; border: 1px solid #d6e8f5; border-radius: 5px; font-size: 12px; }
 .tag-cloud b { font-size: 13px; }
@@ -250,7 +251,7 @@ td small { color: var(--muted); margin-top: 3px; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .metric { min-height: 104px; padding: 18px 15px; }
   .metric strong { font-size: 24px; }
-  .two-columns { grid-template-columns: 1fr; }
+  .two-columns { grid-template-columns: minmax(0, 1fr); }
   .report-panel, .risk-section, .sample-section, .video-section, .model-section, .summary-section, .methodology { padding: 18px; }
   .risk-row { grid-template-columns: 28px minmax(0, 1fr) 68px; gap: 9px; padding: 10px 0; }
   .risk-bar, .risk-row > small { display: none; }
@@ -403,6 +404,7 @@ td small { color: var(--muted); margin-top: 3px; }
   .source-metrics { gap: 10px; }
   .source-metrics span { min-width: 45px; }
   .source-metrics strong { font-size: 17px; }
+  .compact-risk-list .risk-row { grid-template-columns: 28px minmax(0, 1fr) 68px; }
 }
 
 @media (max-width: 520px) {
