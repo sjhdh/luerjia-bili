@@ -118,13 +118,17 @@ EXPAND_REPLIES = r"""
     seen.add(root);
     for (const el of root.querySelectorAll('*')) {
       if (el.shadowRoot) roots.push(el.shadowRoot);
-      if (count >= 24) continue;
+    }
+    for (const el of root.querySelectorAll(
+      'button, a, [role="button"], [class*="more"], [class*="next"], [class*="pagination"]'
+    )) {
+      if (count >= 24 || clicked.has(el)) continue;
       const text = (el.innerText || '').trim();
       if (text.length > 30 || !/(展开|查看|更多|下一页).*(回复|评论)|^(展开|查看更多回复)$/.test(text)) continue;
-      if (clicked.has(text) || el.disabled) continue;
+      if (el.disabled || el.getAttribute?.('aria-disabled') === 'true') continue;
       const style = getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden') continue;
-      clicked.add(text);
+      clicked.add(el);
       el.click();
       count += 1;
     }
@@ -396,12 +400,29 @@ class BilibiliVisibleSource:
                 collected_count = resumed_count or 0
                 complete = True
             else:
+                progress_value = 17 + int(index / max(1, len(eligible_seeds)) * 36)
+
+                async def comment_progress(
+                    count: int,
+                    expected: int | None,
+                    current_progress: int = progress_value,
+                    video_index: int = index,
+                    total_videos: int = len(eligible_seeds),
+                ) -> None:
+                    amount = f"{count}/{expected}" if expected else str(count)
+                    await progress(
+                        "采集官号视频",
+                        current_progress,
+                        f"官号视频 {video_index + 1}/{total_videos} · 已读取 {amount} 条评论",
+                    )
+
                 video_comments, complete = await self._collect_comments(
                     page,
                     video,
                     quota=None,
                     is_cancelled=is_cancelled,
                     exhaustive=True,
+                    comment_progress=comment_progress,
                 )
                 collected_count = len(video_comments)
             comments.extend(video_comments)
@@ -613,6 +634,7 @@ class BilibiliVisibleSource:
         quota: int | None,
         is_cancelled: CancelCallback,
         exhaustive: bool,
+        comment_progress: Callable[[int, int | None], Awaitable[None]] | None = None,
     ) -> tuple[list[CollectedContent], bool]:
         unique: dict[str, CollectedContent] = {}
         comment_root = page.locator("bili-comments, #commentapp, [class*=comment-container]").first
@@ -626,9 +648,11 @@ class BilibiliVisibleSource:
         await page.wait_for_timeout(1_200)
 
         modes = [("all", 1.0)] if exhaustive else [("hot", 0.6), ("new", 0.4)]
-        stable = 0
+        stagnant_rounds = 0
+        last_reported = -1
+        expected = video.replies if exhaustive and video.replies > 0 else None
         for mode, share in modes:
-            stable = 0
+            stagnant_rounds = 0
             if mode == "new":
                 newest = page.get_by_text("最新", exact=True)
                 if await newest.count():
@@ -671,18 +695,24 @@ class BilibiliVisibleSource:
                 expanded = int(await page.evaluate(EXPAND_REPLIES))
                 if expanded:
                     await page.wait_for_timeout(500)
-                stable = stable + 1 if len(unique) == before and expanded == 0 else 0
-                expected = video.replies if exhaustive and video.replies > 0 else None
+                stagnant_rounds = stagnant_rounds + 1 if len(unique) == before else 0
+                if comment_progress and (
+                    last_reported < 0 or len(unique) - last_reported >= 25
+                ):
+                    await comment_progress(len(unique), expected)
+                    last_reported = len(unique)
                 if expected and len(unique) >= expected:
                     break
                 if target and (len(unique) - start_count >= target or (quota and len(unique) >= quota)):
                     break
-                if stable >= (10 if exhaustive else 5):
+                if stagnant_rounds >= (20 if exhaustive else 6):
                     break
                 await page.mouse.wheel(0, 1050)
                 await page.wait_for_timeout(550)
                 iterations += 1
         rows = list(unique.values()) if quota is None else list(unique.values())[:quota]
+        if comment_progress and len(rows) != last_reported:
+            await comment_progress(len(rows), expected)
         complete = video.replies <= 0 or len(rows) >= video.replies
         return rows, complete
 
