@@ -195,11 +195,12 @@ class JobRunner:
                 )
                 return
             await self._persist_result(job_id, bili_result)
+            if await self._is_cancelled(job_id):
+                await self._set_status(
+                    job_id, JobStatus.CANCELLED, "已取消", 100, "任务已取消", finished=True
+                )
+                return
             await self._mark_source_complete(job_id, "bilibili")
-
-        if await self._is_cancelled(job_id):
-            await self._set_status(job_id, JobStatus.CANCELLED, "已取消", 100, "任务已取消", finished=True)
-            return
 
         async with SessionLocal() as session:
             job = await session.get(Job, job_id)
@@ -411,7 +412,8 @@ class JobRunner:
                 account.avatar_url = source_account.avatar_url
                 account.expected_video_count = source_account.expected_video_count
                 account.collected_video_count = max(
-                    account.collected_video_count, source_account.collected_video_count
+                    int(account.collected_video_count or 0),
+                    int(source_account.collected_video_count or 0),
                 )
                 account.raw_meta = {**(account.raw_meta or {}), **source_account.raw_meta}
                 session.add(account)
