@@ -9,6 +9,10 @@ import type { Distribution, DistributionItem, ReportPayload, ReportSection, Samp
 const colors = { positive: "#168a62", neutral: "#d7922d", negative: "#d84a5b", pink: "#fb7299", blue: "#00a6ff" };
 const compact = new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 });
 
+function isReportCover(value: string | null | undefined): value is string {
+  return Boolean(value && !/favicon(?:\.|\/)/i.test(value));
+}
+
 function sentimentOption(items: DistributionItem[]): EChartsOption {
   return { tooltip: { trigger: "item", formatter: "{b}: {d}%" }, legend: { bottom: 0 }, series: [{ type: "pie", radius: ["48%", "72%"], center: ["50%", "44%"], itemStyle: { borderColor: "#fff", borderWidth: 3 }, label: { formatter: "{b}\n{d}%" }, data: items.map((item) => ({ name: item.label, value: item.percentage, itemStyle: { color: colors[item.name] } })) }] };
 }
@@ -91,12 +95,24 @@ export default function ReportPage() {
   if (error) return <div className="workspace"><div className="alert error-alert">{error}</div></div>;
   if (!report) return <div className="loading-page">加载报告</div>;
 
+  const discovery = sections.find((section) => section.key === "bilibili_discovery");
+  const selectedDiscoveryCount = discovery?.videos.filter((video) => video.selected).length
+    || report.metrics.discovery_video_count
+    || report.metrics.selected_video_count;
+  const heroCover = isReportCover(report.hero.cover_url)
+    ? report.hero.cover_url
+    : report.videos.find((video) => isReportCover(video.cover_url))?.cover_url;
+  const missingRequestedSource = Boolean(report.data_quality?.empty_sources.length);
+  const qualityLabel = report.data_quality?.valid === false
+    ? missingRequestedSource ? "部分来源缺少样本" : "部分采集未完整"
+    : "数据质量检查通过";
+
   return <article className="report-page">
     {!shared && <div className="report-toolbar no-print"><Link to={`/jobs/${jobId}`} className="back-link"><ArrowLeft size={17} />返回任务</Link><div><button className="button secondary" onClick={() => void createShare()} disabled={shareBusy}><Share2 size={17} />分享</button><a className="button secondary" href={`/api/v1/reports/${jobId}/export.csv`}><FileSpreadsheet size={17} />CSV</a><a className="button primary" href={`/api/v1/reports/${jobId}/export.pdf`}><Download size={17} />PDF</a></div></div>}
-    <header className="report-hero"><div className="hero-content"><div><p className="hero-kicker">跨平台舆情报告</p><h1>《{report.keyword}》舆情分析</h1><p>{report.hero.subtitle}</p><div className="hero-chips"><span>官号 {report.metrics.official_video_count ?? 0} 个视频</span><span>相关视频 {report.metrics.discovery_video_count ?? report.metrics.selected_video_count} 个</span><span>TapTap {report.metrics.review_count} 条评价</span></div><small>生成于 {new Date(report.generated_at).toLocaleString("zh-CN")} · {shared ? "匿名只读分享" : "内部工作台"}</small></div>{report.hero.cover_url && <img className="hero-cover" src={report.hero.cover_url} alt={report.keyword} />}</div></header>
+    <header className="report-hero"><div className="hero-content"><div><p className="hero-kicker">跨平台舆情报告</p><h1>《{report.keyword}》舆情分析</h1><p>{report.hero.subtitle}</p><div className="hero-chips"><span>官号 {report.metrics.official_video_count ?? 0} 个视频</span><span>相关视频 {selectedDiscoveryCount} 个</span><span>TapTap {report.metrics.review_count} 条评价</span></div><small>生成于 {new Date(report.generated_at).toLocaleString("zh-CN")} · {shared ? "匿名只读分享" : "内部工作台"}</small></div>{heroCover && <img className="hero-cover" src={heroCover} alt={report.keyword} />}</div></header>
     {report.warnings.length > 0 && <div className="report-alert"><AlertTriangle size={18} />{report.warnings.join("；")}</div>}
     <section className="metric-grid"><div className="metric metric-score"><strong>{report.metrics.taptap_score?.toFixed(1) ?? "--"}</strong><span>TapTap 评分</span><small>{report.source_app?.rating_count ? `${compact.format(report.source_app.rating_count)} 条全量评价` : "暂无评分"}</small></div><div className="metric metric-positive"><strong>{report.sentiment.overall.total ? `${report.metrics.overall_positive}%` : "--"}</strong><span>正面</span><small>平台等权</small></div><div className="metric metric-neutral"><strong>{report.sentiment.overall.total ? `${report.metrics.overall_neutral}%` : "--"}</strong><span>中性</span><small>平台等权</small></div><div className="metric metric-negative"><strong>{report.sentiment.overall.total ? `${report.metrics.overall_negative}%` : "--"}</strong><span>负面</span><small>平台等权</small></div></section>
-    <div className={`quality-strip ${report.data_quality?.valid === false ? "quality-warning" : ""}`}><DatabaseZap size={18} /><div><strong>{report.data_quality?.valid === false ? "部分来源缺少样本" : "数据质量检查通过"}</strong><span>{report.data_quality?.sample_count ?? report.sentiment.overall.total} 条有效样本 · 官号与相关视频已按 BVID 去重</span></div></div>
+    <div className={`quality-strip ${report.data_quality?.valid === false ? "quality-warning" : ""}`}><DatabaseZap size={18} /><div><strong>{qualityLabel}</strong><span>{report.data_quality?.sample_count ?? report.sentiment.overall.total} 条有效样本 · 官号与相关视频已按 BVID 去重</span></div></div>
     <div className="report-grid two-columns"><ChartPanel title="跨平台情感占比" subtitle="B站与 TapTap 平台等权" option={sentimentOption(report.sentiment.overall.items)} /><section className="summary-section overall-summary"><div className="summary-title"><Sparkles size={22} /><div><h2>综合结论</h2><p>{report.summary.enhanced ? "LLM 增强" : "本地模型"}</p></div></div><p className="summary-overview">{report.summary.overview}</p><div className="summary-lines"><p><Heart size={16} />{report.summary.positives.slice(0, 2).join("；")}</p><p><AlertTriangle size={16} />{report.summary.risks.slice(0, 2).join("；")}</p><p><MessageCircle size={16} />{report.summary.recommendations.slice(0, 2).join("；")}</p></div></section></div>
     <nav className="report-source-nav no-print">{sections.map((section) => <a key={section.key} href={`#${section.key}`} className={section.available ? "" : "disabled"}><span className={`source-dot source-${section.key === "taptap" ? "taptap" : "bilibili"}`} />{section.label}<small>{section.metrics.sample_count}</small></a>)}</nav>
     {sections.map((section) => <SourceSection key={section.key} section={section} />)}
