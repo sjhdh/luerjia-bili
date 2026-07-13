@@ -110,6 +110,20 @@ test("partial report uses a real cover and accurate collection status", async ({
   await expect(page.getByAltText("失控进化")).toHaveAttribute("src", cover);
 });
 
+test("report remains contained when resized from desktop to mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/reports/demo");
+  await expect(page.getByRole("heading", { name: "跨平台情感占比" })).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const dimensions = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth
+  }));
+
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.innerWidth + 1);
+});
+
 test("report creates an anonymous read-only share link", async ({ page }) => {
   await page.route("**/api/v1/reports/demo/shares", (route) => route.fulfill({ status: 201, json: { id: "share-1", url: "https://example.test/share/opaque-token", expires_at: "2026-07-20T04:00:00Z" } }));
   await page.goto("/reports/demo");
