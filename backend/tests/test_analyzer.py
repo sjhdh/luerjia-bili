@@ -4,7 +4,14 @@ from backend.app.services.analyzer import analyze_job
 
 
 async def test_analyzer_builds_complete_report_with_rating_calibration() -> None:
-    job = Job(id="job-test", keyword="测试游戏", analysis_mode="local")
+    job = Job(
+        id="job-test",
+        keyword="测试游戏",
+        analysis_mode="local",
+        include_discovery=True,
+        include_taptap=True,
+        collection_metrics={},
+    )
     video = Video(
         id=1,
         job_id=job.id,
@@ -13,6 +20,7 @@ async def test_analyzer_builds_complete_report_with_rating_calibration() -> None
         url="https://www.bilibili.com/video/BV1TEST",
         selected=True,
         selection_score=0.88,
+        source_scope="bilibili_discovery",
     )
     app = SourceApp(
         id=1,
@@ -34,6 +42,7 @@ async def test_analyzer_builds_complete_report_with_rating_calibration() -> None
                 job_id=job.id,
                 platform="taptap" if index <= 4 else "bilibili",
                 kind="review" if index <= 4 else "comment",
+                source_scope="taptap" if index <= 4 else "bilibili_discovery",
                 external_id=str(index),
                 author_hash=f"匿名用户 #{index:04d}",
                 text=text,
@@ -45,6 +54,10 @@ async def test_analyzer_builds_complete_report_with_rating_calibration() -> None
     assert payload["metrics"]["video_count"] == 1
     assert payload["metrics"]["review_count"] == 4
     assert payload["model_quality"]["sample_size"] == 4
+    assert payload["sections"]["bilibili_discovery"]["available"] is True
+    assert payload["sections"]["taptap"]["available"] is True
+    assert payload["sections"]["bilibili_official"]["available"] is False
+    assert payload["data_quality"]["valid"] is True
     assert payload["keywords"]
     assert payload["summary"]["overview"]
     assert not warnings

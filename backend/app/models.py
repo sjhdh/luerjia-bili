@@ -56,8 +56,14 @@ class Job(Base):
     analysis_mode: Mapped[str] = mapped_column(String(20), default="local")
     time_range: Mapped[str] = mapped_column(String(20), default="90d")
     depth: Mapped[str] = mapped_column(String(20), default="standard")
+    official_bilibili_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    official_mid: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    include_discovery: Mapped[bool] = mapped_column(Boolean, default=True)
+    include_taptap: Mapped[bool] = mapped_column(Boolean, default=True)
     taptap_app_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    taptap_app_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     taptap_candidates: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    collection_metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
     partial: Mapped[bool] = mapped_column(Boolean, default=False)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -74,6 +80,12 @@ class Job(Base):
         back_populates="job", cascade="all, delete-orphan"
     )
     source_apps: Mapped[list[SourceApp]] = relationship(
+        back_populates="job", cascade="all, delete-orphan"
+    )
+    official_account: Mapped[OfficialAccount | None] = relationship(
+        back_populates="job", cascade="all, delete-orphan", uselist=False
+    )
+    shares: Mapped[list[ReportShare]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
     report: Mapped[Report | None] = relationship(
@@ -103,6 +115,8 @@ class Video(Base):
     selection_score: Mapped[float] = mapped_column(Float, default=0)
     selected: Mapped[bool] = mapped_column(Boolean, default=False)
     raw_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source_scope: Mapped[str] = mapped_column(String(32), default="bilibili_discovery", index=True)
+    official_mid: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     job: Mapped[Job] = relationship(back_populates="videos")
     contents: Mapped[list[ContentItem]] = relationship(back_populates="video")
@@ -122,6 +136,7 @@ class SourceApp(Base):
     rating_count: Mapped[int] = mapped_column(Integer, default=0)
     tags: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     raw_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source_scope: Mapped[str] = mapped_column(String(32), default="taptap", index=True)
 
     job: Mapped[Job] = relationship(back_populates="source_apps")
 
@@ -139,7 +154,10 @@ class ContentItem(Base):
     )
     platform: Mapped[str] = mapped_column(String(20), index=True)
     kind: Mapped[str] = mapped_column(String(20), index=True)
+    source_scope: Mapped[str] = mapped_column(String(32), default="bilibili_discovery", index=True)
     external_id: Mapped[str] = mapped_column(String(100))
+    parent_external_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    reply_depth: Mapped[int] = mapped_column(Integer, default=0)
     author_hash: Mapped[str] = mapped_column(String(32), default="匿名用户")
     text: Mapped[str] = mapped_column(Text)
     rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -165,3 +183,34 @@ class Report(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     job: Mapped[Job] = relationship(back_populates="report")
+
+
+class OfficialAccount(Base):
+    __tablename__ = "official_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    mid: Mapped[str] = mapped_column(String(40), index=True)
+    title: Mapped[str] = mapped_column(String(240))
+    url: Mapped[str] = mapped_column(Text)
+    avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected_video_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    collected_video_count: Mapped[int] = mapped_column(Integer, default=0)
+    raw_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    job: Mapped[Job] = relationship(back_populates="official_account")
+
+
+class ReportShare(Base):
+    __tablename__ = "report_shares"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    job: Mapped[Job] = relationship(back_populates="shares")

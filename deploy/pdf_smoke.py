@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from backend.app.config import get_settings
 from backend.app.database import SessionLocal
 from backend.app.models import Job, JobStatus, Report
+from backend.app.security import SessionSigner
 from backend.app.services.exporter import build_pdf
 
 
@@ -158,12 +159,12 @@ def smoke_report(job_id: str) -> dict[str, object]:
 async def main() -> None:
     settings = get_settings()
     job_id = f"pdf-smoke-{uuid.uuid4().hex[:12]}"
-    credentials = None
+    session_cookie = None
     if settings.admin_password_value:
-        credentials = {
-            "username": settings.admin_username,
-            "password": settings.admin_password_value,
-        }
+        session_cookie = SessionSigner(
+            settings.session_secret_value,
+            ttl_seconds=settings.session_ttl_hours * 60 * 60,
+        ).issue(settings.admin_username)
     async with SessionLocal() as session:
         session.add(
             Job(
@@ -180,7 +181,7 @@ async def main() -> None:
         content = await build_pdf(
             job_id,
             settings.pdf_base_url or f"http://127.0.0.1:{settings.port}",
-            http_credentials=credentials,
+            session_cookie=session_cookie,
             executable_path=settings.browser_executable_path,
         )
         print(f"PDF smoke output: header={content[:4]!r}, bytes={len(content)}")
