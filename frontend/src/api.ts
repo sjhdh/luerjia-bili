@@ -1,4 +1,4 @@
-import type { AuthSession, BrowserSession, Job, ReportPayload, ShareLink } from "./types";
+import type { AuthSession, BrowserSession, Job, ProxyCheck, ProxySettings, ReportPayload, ShareLink } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -43,6 +43,15 @@ export const api = {
     request<BrowserSession>(`/api/v1/platforms/${platform}/input`, {
       method: "POST",
       body: JSON.stringify(payload)
+    }),
+  proxySettings: () => request<ProxySettings>("/api/v1/proxy"),
+  updateProxy: (payload: Pick<ProxySettings, "mode" | "protocol" | "country_code" | "pool_size" | "manual_proxy">) =>
+    request<ProxySettings>("/api/v1/proxy", { method: "PUT", body: JSON.stringify(payload) }),
+  rotateProxy: () => request<ProxySettings>("/api/v1/proxy/rotate", { method: "POST" }),
+  testProxy: (proxy: string | null, protocol: ProxySettings["protocol"] | null) =>
+    request<ProxyCheck>("/api/v1/proxy/test", {
+      method: "POST",
+      body: JSON.stringify({ proxy, protocol })
     }),
   report: (id: string) => request<ReportPayload>(`/api/v1/reports/${id}`),
   sharedReport: (token: string) => request<ReportPayload>(`/api/v1/shared/reports/${token}`),

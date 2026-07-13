@@ -15,7 +15,7 @@ test("live private deployment serves the workbench and embedded login", async ({
     await page.getByLabel("账号").fill(username!);
     await page.getByLabel("密码").fill(password!);
     await page.getByRole("button", { name: "登录" }).click();
-    await expect(page.getByRole("heading", { name: "分析任务" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "舆情任务台" })).toBeVisible();
 
     if (process.env.LIVE_GENERATE_QR === "true") {
       await page.getByTitle("打开 B站 页面子窗口").click();

@@ -6,7 +6,7 @@ import { api } from "../api";
 import ChartPanel from "../components/ChartPanel";
 import type { Distribution, DistributionItem, ReportPayload, ReportSection, Sample, ShareLink, VideoRow } from "../types";
 
-const colors = { positive: "#16855b", neutral: "#d89b22", negative: "#d94452", pink: "#e94b87", blue: "#2585d8" };
+const colors = { positive: "#168a62", neutral: "#d7922d", negative: "#d84a5b", pink: "#fb7299", blue: "#00a6ff" };
 const compact = new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 });
 
 function sentimentOption(items: DistributionItem[]): EChartsOption {

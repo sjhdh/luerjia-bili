@@ -61,6 +61,33 @@ export interface AuthSession {
   username: string | null;
 }
 
+export type ProxyMode = "direct" | "manual" | "auto";
+export type ProxyProtocol = "http" | "https" | "socks4" | "socks5";
+
+export interface ProxySettings {
+  mode: ProxyMode;
+  protocol: ProxyProtocol;
+  country_code: string;
+  pool_size: number;
+  manual_proxy: string;
+  active_proxy: string | null;
+  active_source: "direct" | "manual" | "pool";
+  exit_ip: string | null;
+  latency_ms: number | null;
+  last_checked_at: string | null;
+  last_error: string | null;
+  pool_api: string;
+}
+
+export interface ProxyCheck {
+  proxy: string;
+  reachable: boolean;
+  latency_ms: number | null;
+  exit_ip: string | null;
+  message: string;
+  checked_at: string;
+}
+
 export interface ShareLink {
   id: string;
   url: string;

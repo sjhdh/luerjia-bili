@@ -5,6 +5,7 @@ import json
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -37,6 +38,10 @@ from .schemas import (
     JobCreate,
     JobRead,
     LoginRequest,
+    ProxyCheckRead,
+    ProxySettingsRead,
+    ProxySettingsUpdate,
+    ProxyTestRequest,
     ShareCreate,
     ShareRead,
     TapTapSelection,
@@ -50,6 +55,7 @@ from .security import (
 )
 from .services.exporter import build_csv, build_pdf
 from .services.job_runner import init_job_runner
+from .services.proxy import ProxyConfigurationError, ProxyUnavailableError
 from .sources.browser import init_browser_manager
 
 settings = get_settings()
@@ -271,6 +277,56 @@ async def send_browser_input(
     except Exception as exc:
         raise HTTPException(status_code=409, detail=f"无法操作页面子窗口：{type(exc).__name__}") from exc
     return await _browser_session_response(platform)
+
+
+@app.get("/api/v1/proxy", response_model=ProxySettingsRead)
+async def get_proxy_settings() -> dict[str, object]:
+    return browser.proxy_state()
+
+
+async def _ensure_proxy_change_allowed(session: AsyncSession) -> None:
+    blocking_statuses = {
+        JobStatus.PENDING.value,
+        JobStatus.COLLECTING.value,
+        JobStatus.ANALYZING.value,
+        JobStatus.RENDERING.value,
+    }
+    active = await session.scalar(select(Job.id).where(Job.status.in_(blocking_statuses)))
+    if active:
+        raise HTTPException(status_code=409, detail="采集或分析进行中，完成或取消任务后再切换代理")
+
+
+@app.put("/api/v1/proxy", response_model=ProxySettingsRead)
+async def update_proxy_settings(
+    payload: ProxySettingsUpdate, session: AsyncSession = Depends(get_session)
+) -> dict[str, object]:
+    await _ensure_proxy_change_allowed(session)
+    try:
+        return await browser.configure_proxy(**payload.model_dump())
+    except ProxyConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProxyUnavailableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/proxy/rotate", response_model=ProxySettingsRead)
+async def rotate_proxy(session: AsyncSession = Depends(get_session)) -> dict[str, object]:
+    await _ensure_proxy_change_allowed(session)
+    try:
+        return await browser.rotate_proxy()
+    except ProxyConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProxyUnavailableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/proxy/test", response_model=ProxyCheckRead)
+async def test_proxy(payload: ProxyTestRequest) -> ProxyCheckRead:
+    try:
+        result = await browser.test_proxy(payload.proxy, payload.protocol)
+    except ProxyConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProxyCheckRead(**asdict(result))
 
 
 @app.post("/api/v1/jobs", response_model=JobRead, status_code=201)

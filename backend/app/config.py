@@ -69,6 +69,10 @@ class Settings(BaseSettings):
         return self.data_dir / "exports"
 
     @property
+    def proxy_settings_path(self) -> Path:
+        return self.data_dir / "proxy-settings.json"
+
+    @property
     def login_method(self) -> Literal["window", "qr"]:
         return "qr" if self.deployment_mode == "server" else "window"
 

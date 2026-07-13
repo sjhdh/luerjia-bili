@@ -6,6 +6,7 @@ from sqlalchemy import select
 from backend.app.database import SessionLocal
 from backend.app.main import app, browser
 from backend.app.models import Job, Report, ReportShare
+from backend.app.services.proxy import ProxyCheck
 
 
 def test_health_and_job_waiting_for_login() -> None:
@@ -53,6 +54,60 @@ def test_embedded_login_api_never_returns_cookie_material(monkeypatch) -> None:
     assert payload["workspace_ready"] is True
     assert "cookie" not in str(payload).casefold()
     assert "sessdata" not in str(payload).casefold()
+
+
+def test_proxy_configuration_api(monkeypatch) -> None:
+    state = {
+        "mode": "auto",
+        "protocol": "https",
+        "country_code": "CN",
+        "pool_size": 3,
+        "manual_proxy": "",
+        "active_proxy": "http://192.0.2.20:8080",
+        "active_source": "pool",
+        "exit_ip": "203.0.113.20",
+        "latency_ms": 85,
+        "last_checked_at": "2026-07-13T12:00:00+00:00",
+        "last_error": None,
+        "pool_api": "https://proxy.scdn.io/api/get_proxy.php",
+    }
+
+    async def configure_proxy(**_values) -> dict[str, object]:
+        return state
+
+    async def test_proxy(_value, _protocol) -> ProxyCheck:
+        return ProxyCheck(
+            proxy="http://192.0.2.20:8080",
+            reachable=True,
+            latency_ms=85,
+            exit_ip="203.0.113.20",
+            message="代理出口可用",
+            checked_at="2026-07-13T12:00:00+00:00",
+        )
+
+    monkeypatch.setattr(browser, "configure_proxy", configure_proxy)
+    monkeypatch.setattr(browser, "test_proxy", test_proxy)
+    with TestClient(app) as client:
+        configured = client.put(
+            "/api/v1/proxy",
+            json={
+                "mode": "auto",
+                "protocol": "https",
+                "country_code": "CN",
+                "pool_size": 3,
+                "manual_proxy": "",
+            },
+        )
+        assert configured.status_code == 200
+        assert configured.json()["active_source"] == "pool"
+
+        checked = client.post(
+            "/api/v1/proxy/test",
+            json={"proxy": "192.0.2.20:8080", "protocol": "https"},
+        )
+        assert checked.status_code == 200
+        assert checked.json()["reachable"] is True
+        assert checked.json()["exit_ip"] == "203.0.113.20"
 
 
 async def test_report_share_is_opaque_read_only_and_revocable() -> None:
