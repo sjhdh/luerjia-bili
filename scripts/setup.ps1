@@ -6,8 +6,8 @@ Set-Location $Root
 
 $Python = Get-Command python -ErrorAction Stop
 $Version = & $Python.Source -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-if ([version]$Version -lt [version]"3.12") {
-    throw "Python 3.12 or newer is required. Found $Version."
+if ([version]$Version -lt [version]"3.11") {
+    throw "Python 3.11 or newer is required. Found $Version."
 }
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {

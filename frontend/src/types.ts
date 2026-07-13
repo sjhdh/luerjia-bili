@@ -39,6 +39,9 @@ export interface Job {
 export interface BrowserSession {
   running: boolean;
   authenticated: boolean;
+  login_method: "window" | "qr";
+  qr_ready: boolean;
+  qr_expires_at: string | null;
   message: string;
 }
 

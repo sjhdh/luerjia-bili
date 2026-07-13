@@ -49,6 +49,9 @@ class BrowserSessionRead(BaseModel):
     running: bool
     authenticated: bool
     user_id_hint: str | None = None
+    login_method: Literal["window", "qr"] = "window"
+    qr_ready: bool = False
+    qr_expires_at: datetime | None = None
     message: str
 
 
@@ -56,3 +59,5 @@ class HealthRead(BaseModel):
     status: str
     model_configured: bool
     llm_configured: bool
+    deployment_mode: Literal["local", "server"] = "local"
+    access_protected: bool = False

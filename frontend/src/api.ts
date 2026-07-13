@@ -26,7 +26,11 @@ export const api = {
       body: JSON.stringify({ app_id: appId })
     }),
   session: () => request<BrowserSession>("/api/v1/bilibili/session"),
-  connect: () => request<BrowserSession>("/api/v1/bilibili/login-window", { method: "POST" }),
+  connect: (method: BrowserSession["login_method"]) =>
+    request<BrowserSession>(
+      method === "qr" ? "/api/v1/bilibili/qr-login" : "/api/v1/bilibili/login-window",
+      { method: "POST" }
+    ),
   disconnect: () => request<BrowserSession>("/api/v1/bilibili/session", { method: "DELETE" }),
   report: (id: string) => request<ReportPayload>(`/api/v1/reports/${id}`)
 };

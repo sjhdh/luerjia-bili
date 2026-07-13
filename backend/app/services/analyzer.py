@@ -77,7 +77,12 @@ class SentimentEngine:
     def _predict_pipeline(self, texts: list[str]) -> list[tuple[str, float]]:
         pipeline_instance = self._pipeline
         assert pipeline_instance is not None
-        outputs = pipeline_instance(texts, batch_size=16, truncation=True, max_length=256)
+        outputs = pipeline_instance(
+            texts,
+            batch_size=self.settings.model_batch_size,
+            truncation=True,
+            max_length=256,
+        )
         predictions: list[tuple[str, float]] = []
         for output in outputs:
             rows = output if isinstance(output, list) else [output]
