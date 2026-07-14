@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from backend.app.database import SessionLocal
 from backend.app.main import app, runner
-from backend.app.models import Job, OfficialAccount
+from backend.app.models import ContentItem, Job, OfficialAccount
 from backend.app.sources.base import (
     CollectedContent,
     CollectedOfficialAccount,
@@ -541,3 +541,39 @@ async def test_official_checkpoint_metrics_use_persisted_union_count() -> None:
     assert checkpoint["complete"] is True
     assert stored.collection_metrics["bilibili"]["official"]["complete_videos"] == 1
     assert stored.warnings == []
+
+
+async def test_taptap_platform_is_canonicalized_to_taptap_scope() -> None:
+    job_id = f"taptap-scope-{uuid.uuid4()}"
+    with TestClient(app):
+        async with SessionLocal() as session:
+            session.add(
+                Job(
+                    id=job_id,
+                    keyword="失控进化",
+                    status="completed",
+                    collection_metrics={},
+                )
+            )
+            await session.commit()
+
+        await runner._persist_result(
+            job_id,
+            CollectionResult(
+                contents=[
+                    CollectedContent(
+                        external_id="tap-review",
+                        platform="taptap",
+                        kind="review",
+                        text="评价正文",
+                    )
+                ]
+            ),
+        )
+        async with SessionLocal() as session:
+            item = await session.scalar(
+                select(ContentItem).where(ContentItem.job_id == job_id)
+            )
+
+    assert item is not None
+    assert item.source_scope == "taptap"

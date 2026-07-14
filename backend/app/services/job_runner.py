@@ -498,7 +498,11 @@ class JobRunner:
                         video_id=linked_video.id if linked_video else None,
                         platform=source_content.platform,
                         kind=source_content.kind,
-                        source_scope=source_content.source_scope,
+                        source_scope=(
+                            "taptap"
+                            if source_content.platform == "taptap"
+                            else source_content.source_scope
+                        ),
                         external_id=source_content.external_id,
                         parent_external_id=source_content.parent_external_id,
                         reply_depth=source_content.reply_depth,

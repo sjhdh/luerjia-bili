@@ -71,6 +71,7 @@ def test_taptap_parser_extracts_rating_tags_and_reviews() -> None:
     assert app.rating_count == 12_000
     assert app.tags[0] == {"name": "画面优秀", "count": 120}
     assert [review.rating for review in reviews] == [5, 1]
+    assert all(review.source_scope == "taptap" for review in reviews)
 
 
 def test_current_taptap_search_card_uses_schema_title_and_deduplicates_links() -> None:

@@ -445,6 +445,7 @@ def parse_taptap_reviews_html(html: str, app_id: str) -> list[CollectedContent]:
                 kind="review",
                 text=text,
                 author=author,
+                source_scope="taptap",
                 rating=rating,
                 likes=parse_human_count(like_text),
             )

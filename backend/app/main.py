@@ -601,8 +601,11 @@ async def reanalyze_job(
     job.warnings = [
         warning
         for warning in (job.warnings or [])
-        if not warning.startswith(("GPT-5.6", "LLM 增强", "本地模型"))
+        if not warning.startswith(
+            ("GPT-5.6", "LLM 增强", "本地模型", "以下来源没有有效样本：")
+        )
     ]
+    job.partial = False
     job.cancel_requested = False
     job.finished_at = None
     job.collection_metrics = {
