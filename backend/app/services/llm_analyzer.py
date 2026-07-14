@@ -84,7 +84,11 @@ class LLMAnalyzer:
                         "response_format": {"type": "json_object"},
                         "messages": [
                             {"role": "system", "content": system},
-                            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                            {
+                                "role": "user",
+                                "content": "Return json for this request:\n"
+                                + json.dumps(user, ensure_ascii=False),
+                            },
                         ],
                     },
                 )
