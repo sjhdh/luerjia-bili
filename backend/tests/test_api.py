@@ -1,4 +1,5 @@
 import time
+import uuid
 
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, update
@@ -179,6 +180,136 @@ async def test_reanalysis_reuses_collected_content_without_recollection(monkeypa
             assert content_count == 1
             assert report is not None
             assert report.payload["version"] == "before"
+
+
+async def test_rerun_rejects_duplicate_active_clone(monkeypatch) -> None:
+    source_id = f"rerun-source-{uuid.uuid4()}"
+
+    async def enqueue(_job_id: str, *, analysis_only: bool = False) -> None:
+        assert analysis_only is False
+
+    monkeypatch.setattr(runner, "enqueue", enqueue)
+    with TestClient(app) as client:
+        async with SessionLocal() as session:
+            await session.execute(
+                update(Job)
+                .where(Job.status.in_([status.value for status in ACTIVE_JOB_STATUSES]))
+                .values(status="cancelled", stage="测试清理", progress=100)
+            )
+            session.add(
+                Job(
+                    id=source_id,
+                    keyword="失控进化",
+                    status="partial",
+                    include_discovery=True,
+                    include_taptap=True,
+                )
+            )
+            await session.commit()
+
+        first = client.post(f"/api/v1/jobs/{source_id}/rerun")
+        second = client.post(f"/api/v1/jobs/{source_id}/rerun")
+
+        assert first.status_code == 201
+        assert second.status_code == 409
+        assert second.json()["detail"] == "当前已有任务运行，请等待完成或先取消"
+
+        async with SessionLocal() as session:
+            await session.execute(
+                update(Job)
+                .where(Job.status.in_([status.value for status in ACTIVE_JOB_STATUSES]))
+                .values(status="cancelled", stage="测试清理", progress=100)
+            )
+            await session.commit()
+
+
+async def test_retry_reopens_incomplete_sources_and_preserves_content(monkeypatch) -> None:
+    job_id = f"retry-partial-{uuid.uuid4()}"
+    queued: list[str] = []
+
+    async def enqueue(current_job_id: str, *, analysis_only: bool = False) -> None:
+        assert analysis_only is False
+        queued.append(current_job_id)
+
+    monkeypatch.setattr(runner, "enqueue", enqueue)
+    with TestClient(app) as client:
+        async with SessionLocal() as session:
+            await session.execute(
+                update(Job)
+                .where(Job.status.in_([status.value for status in ACTIVE_JOB_STATUSES]))
+                .values(status="cancelled", stage="测试清理", progress=100)
+            )
+            job = Job(
+                id=job_id,
+                keyword="失控进化",
+                status="partial",
+                official_mid="3546785396034301",
+                include_discovery=True,
+                include_taptap=True,
+                collection_metrics={
+                    "bilibili_complete": True,
+                    "official_phase_complete": True,
+                    "taptap_complete": True,
+                    "official_checkpoint": {
+                        "video_id": "BV-partial",
+                        "expected_comments": 10,
+                        "collected_comments": 5,
+                        "complete": False,
+                    },
+                    "bilibili": {
+                        "official": {
+                            "collected_videos": 1,
+                            "complete_videos": 0,
+                        },
+                        "discovery": {"comment_count": 1},
+                    },
+                },
+            )
+            session.add(job)
+            session.add_all(
+                [
+                    ContentItem(
+                        job_id=job_id,
+                        platform="bilibili",
+                        kind="comment",
+                        source_scope="bilibili_official",
+                        external_id="official-existing",
+                        author_hash="匿名用户 #0001",
+                        text="官号已有评论",
+                    ),
+                    ContentItem(
+                        job_id=job_id,
+                        platform="bilibili",
+                        kind="comment",
+                        source_scope="bilibili_discovery",
+                        external_id="discovery-existing",
+                        author_hash="匿名用户 #0002",
+                        text="发现页已有评论",
+                    ),
+                ]
+            )
+            await session.commit()
+
+        response = client.post(f"/api/v1/jobs/{job_id}/retry")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["collection_metrics"]["bilibili_complete"] is False
+        assert payload["collection_metrics"]["official_phase_complete"] is False
+        assert payload["collection_metrics"].get("discovery_phase_complete") is not False
+        assert payload["collection_metrics"]["taptap_complete"] is False
+        assert queued == [job_id]
+
+        async with SessionLocal() as session:
+            content_count = await session.scalar(
+                select(func.count(ContentItem.id)).where(ContentItem.job_id == job_id)
+            )
+            stored = await session.get(Job, job_id)
+            assert stored is not None
+            stored.status = "cancelled"
+            await session.commit()
+
+        assert content_count == 2
 
 
 async def test_report_share_is_opaque_read_only_and_revocable() -> None:

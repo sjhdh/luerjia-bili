@@ -53,7 +53,7 @@ COMMENT_EXTRACTOR = r"""
     }
   }
   const candidates = [];
-    for (const root of roots) {
+  for (const root of roots) {
     for (const selector of [
       'bili-comment-renderer',
       'bili-comment-reply-renderer',
@@ -79,9 +79,10 @@ COMMENT_EXTRACTOR = r"""
     const tag = el.tagName.toLowerCase();
     const cls = String(el.className || '');
     const data = el.__data || {};
-    const id = String(data.rpid_str || data.rpid || attr(el, ['data-rpid', 'rpid', 'reply-id', 'data-id', 'id']) || '');
+    const id = String(data.rpid_str || data.rpid || attr(el, ['data-rpid', 'rpid', 'reply-id', 'data-id']) || '');
     const textEl = find(el, 'bili-rich-text, [class*="reply-content"], [class*="message"], [class*="content"], [id*="content"]');
-    const text = String(data.content?.message || textEl?.shadowRoot?.textContent || textEl?.innerText || textEl?.textContent || '').trim();
+    const richContents = textEl?.shadowRoot?.querySelector('#contents');
+    const text = String(data.content?.message || richContents?.innerText || richContents?.textContent || textEl?.innerText || textEl?.textContent || '').trim();
     if (text.length < 2 || text.length > 20000) continue;
     const authorEl = find(el, 'bili-comment-user-info, [class*="user-name"], [class*="member"], [class*="author"]');
     const likeEl = find(el, '[class*="like"], [class*="vote"]');
@@ -119,12 +120,25 @@ EXPAND_REPLIES = r"""
     for (const el of root.querySelectorAll('*')) {
       if (el.shadowRoot) roots.push(el.shadowRoot);
     }
-    for (const el of root.querySelectorAll(
-      'button, a, [role="button"], [class*="more"], [class*="next"], [class*="pagination"]'
-    )) {
+    for (const el of root.querySelectorAll('button, a, [role="button"]')) {
       if (count >= 24 || clicked.has(el)) continue;
-      const text = (el.innerText || '').trim();
-      if (text.length > 30 || !/(展开|查看|更多|下一页).*(回复|评论)|^(展开|查看更多回复)$/.test(text)) continue;
+      const text = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ');
+      let current = el;
+      let insideReplies = false;
+      while (current) {
+        const currentTag = current.tagName?.toLowerCase?.() || '';
+        if (currentTag === 'bili-comment-replies-renderer' || currentTag === 'bili-comment-thread-renderer') {
+          insideReplies = true;
+          break;
+        }
+        if (current.parentElement) {
+          current = current.parentElement;
+        } else {
+          current = current.getRootNode?.()?.host || null;
+        }
+      }
+      if (!insideReplies || text.length > 30) continue;
+      if (!/^(?:点击查看|展开(?:全部|\d+条?)?回复|查看(?:全部|\d+条?)?回复|查看更多回复|更多回复|下一页|下页)$/.test(text)) continue;
       if (el.disabled || el.getAttribute?.('aria-disabled') === 'true') continue;
       const style = getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden') continue;
@@ -148,14 +162,23 @@ DANMAKU_EXTRACTOR = r"""
     seen.add(root);
     for (const el of root.querySelectorAll('*')) {
       if (el.shadowRoot) roots.push(el.shadowRoot);
-      const cls = String(el.className || '');
-      if (/danmaku-info-row|dm-row|danmaku-item/.test(cls)) {
-        const text = (el.innerText || '').trim().split('\n')[0];
-        if (text.length > 1) values.push(text);
+    }
+    for (const el of root.querySelectorAll(
+      '.dm-info-row .dm-info-dm, [class*="danmaku-info-row"] [class*="content"], [class*="dm-row"] [class*="content"], [class*="danmaku-item"] [class*="content"], [class*="danmaku-item"]'
+    )) {
+      const row = el.closest?.('.dm-info-row, [class*="danmaku-info-row"], [class*="dm-row"], [class*="danmaku-item"]');
+      const text = String(el.getAttribute?.('title') || el.innerText || el.textContent || '').trim();
+      if (text.length > 1 && !/^(?:屏蔽用户|举报|\d{1,2}:\d{2}|\d{2}-\d{2}\s+\d{2}:\d{2})$/.test(text)) {
+        const id = String(el.getAttribute?.('data-index') || row?.getAttribute?.('data-index') || '');
+        const key = id || text;
+        if (!seen.has(key)) {
+          seen.add(key);
+          values.push({id, text});
+        }
       }
     }
   }
-  return [...new Set(values)].slice(0, 10000);
+  return values.slice(0, 10000);
 }
 """
 
@@ -198,6 +221,7 @@ class BilibiliVisibleSource:
         persist: PersistCallback | None = None,
         resume_comment_counts: dict[str, int] | None = None,
         official_phase_complete: bool = False,
+        discovery_phase_complete: bool = False,
         existing_official_ids: set[str] | None = None,
     ) -> CollectionResult:
         resumed_counts = resume_comment_counts or {}
@@ -226,8 +250,14 @@ class BilibiliVisibleSource:
                 combined.contents.extend(official.contents)
                 combined.warnings.extend(official.warnings)
                 combined.metrics["bilibili"]["official"] = official.metrics.get("official", {})
-                official_ids = {video.external_id for video in official.videos}
+                official_ids.update(video.external_id for video in official.videos)
                 if persist:
+                    official_metrics = official.metrics.get("official", {})
+                    official_complete = bool(
+                        int(official_metrics.get("collected_videos", 0))
+                        and int(official_metrics.get("complete_videos", 0))
+                        >= int(official_metrics.get("collected_videos", 0))
+                    )
                     await persist(
                         CollectionResult(
                             official_account=official.official_account,
@@ -235,13 +265,13 @@ class BilibiliVisibleSource:
                                 "bilibili": {
                                     "official": official.metrics.get("official", {})
                                 },
-                                "official_phase_complete": True,
+                                "official_phase_complete": official_complete,
                             },
                             warnings=official.warnings,
                         )
                     )
 
-            if include_discovery and not await is_cancelled():
+            if include_discovery and not discovery_phase_complete and not await is_cancelled():
                 discovery = await self._collect_discovery(
                     page,
                     keyword,
@@ -257,6 +287,7 @@ class BilibiliVisibleSource:
                 combined.metrics["bilibili"]["discovery"] = discovery.metrics.get(
                     "discovery", {}
                 )
+                combined.metrics["discovery_phase_complete"] = True
 
             unique_videos: dict[str, CollectedVideo] = {}
             for video in combined.videos:
@@ -596,6 +627,13 @@ class BilibiliVisibleSource:
             contents.extend(rows)
             await self._delay()
 
+        target_comments = sum(quotas.values())
+        comment_count = sum(item.kind == "comment" for item in contents)
+        if comment_count < target_comments:
+            warnings.append(
+                f"B站相关视频评论目标 {target_comments} 条，实际读取 {comment_count} 条可见评论"
+            )
+
         selected_videos = [video for video in detailed if video.external_id in selected_ids]
         per_video_danmaku = max(1, int(config["danmakus"]) // max(1, len(selected_videos)))
         for index, video in enumerate(selected_videos):
@@ -617,6 +655,10 @@ class BilibiliVisibleSource:
             except Exception as exc:
                 warnings.append(f"{video.external_id} 弹幕列表未读取：{type(exc).__name__}")
 
+        danmaku_count = sum(item.kind == "danmaku" for item in contents)
+        if any(video.danmakus > 0 for video in selected_videos) and danmaku_count == 0:
+            warnings.append("B站视频显示存在弹幕，但可见弹幕列表未读取到内容")
+
         all_videos: list[CollectedVideo] = []
         for row in ranked:
             video = CollectedVideo(
@@ -635,8 +677,10 @@ class BilibiliVisibleSource:
                 "discovery": {
                     "candidate_count": len(candidates),
                     "selected_count": len(selected_videos),
-                    "comment_count": sum(item.kind == "comment" for item in contents),
-                    "danmaku_count": sum(item.kind == "danmaku" for item in contents),
+                    "target_comment_count": target_comments,
+                    "comment_count": comment_count,
+                    "target_danmaku_count": int(config["danmakus"]),
+                    "danmaku_count": danmaku_count,
                     "deduplicated": len(exclude_ids),
                 }
             },
@@ -738,32 +782,53 @@ class BilibiliVisibleSource:
         quota: int,
         is_cancelled: CancelCallback,
     ) -> list[CollectedContent]:
-        trigger = page.get_by_text("弹幕列表", exact=True)
+        trigger = page.locator(
+            "#danmukuBox .bui-collapse-wrap-folded .bui-collapse-arrow, "
+            ".danmaku-box .bui-collapse-wrap-folded .bui-collapse-arrow"
+        ).first
         if await trigger.count():
             try:
-                await trigger.first.click(timeout=3_000)
-                await page.wait_for_timeout(600)
+                await trigger.click(timeout=3_000)
             except Exception:
                 pass
-        values: list[str] = []
+        row = page.locator(
+            "#danmukuBox .dm-info-dm, #danmukuBox [class*=danmaku-item], "
+            ".danmaku-box .dm-info-dm"
+        ).first
+        try:
+            await row.wait_for(state="attached", timeout=8_000)
+        except Exception:
+            return []
+        scroll_target = page.locator(
+            "#danmukuBox .bui-long-list-wrap, .danmaku-box .bui-long-list-wrap"
+        ).first
+        values: list[tuple[str, str]] = []
         seen: set[str] = set()
         for _ in range(max(4, min(40, quota // 15 + 4))):
             if await is_cancelled():
                 break
-            batch: list[str] = await page.evaluate(DANMAKU_EXTRACTOR)
-            for text in batch:
-                normalized = text.strip()
-                if normalized and normalized not in seen:
-                    values.append(normalized)
-                    seen.add(normalized)
+            batch: list[dict[str, Any] | str] = await page.evaluate(DANMAKU_EXTRACTOR)
+            for item in batch:
+                raw_text = item if isinstance(item, str) else str(item.get("text") or "")
+                normalized = raw_text.strip()
+                raw_id = "" if isinstance(item, str) else str(item.get("id") or "")
+                key = raw_id or normalized
+                if normalized and key not in seen:
+                    values.append((key, normalized))
+                    seen.add(key)
             if len(values) >= quota:
                 break
-            await page.mouse.wheel(0, 650)
-            await page.wait_for_timeout(350)
+            try:
+                if await scroll_target.count():
+                    await scroll_target.hover(timeout=2_000)
+                await page.mouse.wheel(0, 850)
+            except Exception:
+                await page.mouse.wheel(0, 650)
+            await page.wait_for_timeout(450)
         return [
             CollectedContent(
                 external_id=hashlib.sha1(
-                    f"{video.external_id}:danmaku:{index}:{text}".encode()
+                    f"{video.external_id}:danmaku:{key}:{text}".encode()
                 ).hexdigest()[:24],
                 platform="bilibili",
                 kind="danmaku",
@@ -771,7 +836,7 @@ class BilibiliVisibleSource:
                 video_external_id=video.external_id,
                 source_scope=video.source_scope,
             )
-            for index, text in enumerate(values[:quota])
+            for key, text in values[:quota]
         ]
 
     @staticmethod

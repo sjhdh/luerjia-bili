@@ -338,12 +338,17 @@ class BilibiliBrowserManager:
             platform_scope=platform_scope,
         )
 
-    async def recover_taptap_risk(self, attempt: int) -> str | None:
+    async def recover_taptap_risk(
+        self,
+        attempt: int,
+        *,
+        route_failure: bool = False,
+    ) -> str | None:
         session = self._sessions["taptap"]
         enabled, limit = self.proxy.risk_rotation_policy()
         state = self.proxy.state()
         if (
-            not session.risk_detected
+            not (session.risk_detected or route_failure)
             or not enabled
             or attempt >= limit
             or state["mode"] != "auto"

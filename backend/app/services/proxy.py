@@ -27,6 +27,12 @@ TARGET_URLS = {
     "bilibili": "https://www.bilibili.com/robots.txt",
     "taptap": "https://www.taptap.cn/robots.txt",
 }
+
+
+def target_status_available(status_code: int) -> bool:
+    return 200 <= status_code < 400
+
+
 ALLOWED_PROTOCOLS = {"http", "https", "socks4", "socks5"}
 
 
@@ -244,10 +250,7 @@ class ProxyManager:
                                 "Range": "bytes=0-2047",
                             },
                         )
-                        targets[name] = (
-                            target_response.status_code < 500
-                            and target_response.status_code != 407
-                        )
+                        targets[name] = target_status_available(target_response.status_code)
                     except (OSError, httpx.HTTPError, TimeoutError):
                         targets[name] = False
                         if name in required_targets:
@@ -351,7 +354,7 @@ class ProxyManager:
                         url,
                         headers={"Accept": "text/plain,text/html;q=0.8", "Range": "bytes=0-2047"},
                     )
-                    targets[name] = target_response.status_code < 500
+                    targets[name] = target_status_available(target_response.status_code)
             reachable = all(targets.values())
             failed = "、".join(name for name, available in targets.items() if not available)
             return ProxyCheck(

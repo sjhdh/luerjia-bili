@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..config import Settings
@@ -12,7 +14,7 @@ from ..models import ContentItem, Job, JobStatus, OfficialAccount, Report, Sourc
 from ..sources.base import AwaitingSourceSelection, CollectionResult, SourcePaused
 from ..sources.bilibili import BilibiliVisibleSource
 from ..sources.browser import BilibiliBrowserManager
-from ..sources.taptap import TapTapVisibleSource
+from ..sources.taptap import TapTapNavigationError, TapTapVisibleSource
 from .analyzer import AnalysisCancelled, analyze_job
 from .privacy import anonymize_author, sanitize_text
 
@@ -158,6 +160,10 @@ class JobRunner:
             official_phase_complete = bool(
                 (job.collection_metrics or {}).get("official_phase_complete")
             )
+            discovery_phase_complete = bool(
+                (job.collection_metrics or {}).get("discovery_phase_complete")
+                or ((job.collection_metrics or {}).get("bilibili") or {}).get("discovery")
+            )
             official_videos = list(
                 (
                     await session.scalars(
@@ -197,6 +203,7 @@ class JobRunner:
                     persist=lambda result: self._persist_result(job_id, result),
                     resume_comment_counts=resume_comment_counts,
                     official_phase_complete=official_phase_complete,
+                    discovery_phase_complete=discovery_phase_complete,
                     existing_official_ids={video.external_id for video in official_videos},
                 )
             except SourcePaused as exc:
@@ -253,8 +260,8 @@ class JobRunner:
                 )
                 return
             except Exception as exc:
-                await self._add_warning(job_id, f"TapTap 采集失败：{type(exc).__name__}")
-                await self._mark_source_complete(job_id, "taptap")
+                detail = str(exc) if isinstance(exc, TapTapNavigationError) else type(exc).__name__
+                await self._add_warning(job_id, f"TapTap 采集失败：{detail}")
 
         await self._set_status(job_id, JobStatus.ANALYZING, "运行舆情模型", 92, "正在分类情感与聚类议题")
         async with SessionLocal() as session:
@@ -504,10 +511,113 @@ class JobRunner:
                     )
                 )
             if result.metrics:
+                await session.flush()
+                metrics = await self._reconcile_collection_metrics(
+                    session,
+                    job_id,
+                    result.metrics,
+                )
+                official = ((metrics.get("bilibili") or {}).get("official") or {})
+                if (
+                    official
+                    and int(official.get("collected_videos", 0))
+                    <= int(official.get("complete_videos", 0))
+                ):
+                    job.warnings = [
+                        warning
+                        for warning in job.warnings
+                        if not warning.startswith("官号评论完整采集")
+                    ]
                 job.collection_metrics = self._merge_metrics(
-                    job.collection_metrics or {}, result.metrics
+                    job.collection_metrics or {}, metrics
                 )
             await session.commit()
+
+    async def _reconcile_collection_metrics(
+        self,
+        session: AsyncSession,
+        job_id: str,
+        metrics: dict,
+    ) -> dict:
+        reconciled = deepcopy(metrics)
+
+        async def comment_count(video_external_id: str) -> int | None:
+            video = await session.scalar(
+                select(Video).where(
+                    Video.job_id == job_id,
+                    Video.external_id == video_external_id,
+                )
+            )
+            if not video:
+                return None
+            return int(
+                await session.scalar(
+                    select(func.count(ContentItem.id)).where(
+                        ContentItem.job_id == job_id,
+                        ContentItem.video_id == video.id,
+                        ContentItem.kind == "comment",
+                    )
+                )
+                or 0
+            )
+
+        checkpoint = reconciled.get("official_checkpoint")
+        if isinstance(checkpoint, dict):
+            actual = await comment_count(str(checkpoint.get("video_id") or ""))
+            if actual is not None:
+                expected = int(checkpoint.get("expected_comments", 0))
+                checkpoint["collected_comments"] = actual
+                checkpoint["complete"] = expected <= 0 or actual >= expected
+
+        bilibili = reconciled.get("bilibili")
+        if isinstance(bilibili, dict):
+            official = bilibili.get("official")
+            if isinstance(official, dict):
+                rows = official.get("videos")
+                actual_total = int(official.get("collected_comments", 0))
+                complete_total = int(official.get("complete_videos", 0))
+                if isinstance(rows, list) and rows:
+                    actual_total = 0
+                    complete_total = 0
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        actual = await comment_count(str(row.get("video_id") or ""))
+                        if actual is not None:
+                            row["collected_comments"] = actual
+                        expected = int(row.get("expected_comments", 0))
+                        row["complete"] = expected <= 0 or int(
+                            row.get("collected_comments", 0)
+                        ) >= expected
+                        actual_total += int(row.get("collected_comments", 0))
+                        complete_total += int(bool(row["complete"]))
+                official["collected_comments"] = actual_total
+                official["complete_videos"] = complete_total
+                if "official_phase_complete" in reconciled:
+                    collected_videos = int(official.get("collected_videos", 0))
+                    reconciled["official_phase_complete"] = bool(
+                        collected_videos and complete_total >= collected_videos
+                    )
+            bilibili["comment_count"] = int(
+                await session.scalar(
+                    select(func.count(ContentItem.id)).where(
+                        ContentItem.job_id == job_id,
+                        ContentItem.platform == "bilibili",
+                        ContentItem.kind == "comment",
+                    )
+                )
+                or 0
+            )
+            bilibili["sample_count"] = int(
+                await session.scalar(
+                    select(func.count(ContentItem.id)).where(
+                        ContentItem.job_id == job_id,
+                        ContentItem.platform == "bilibili",
+                    )
+                )
+                or 0
+            )
+        return reconciled
 
     async def _mark_source_complete(self, job_id: str, source: str) -> None:
         async with SessionLocal() as session:
