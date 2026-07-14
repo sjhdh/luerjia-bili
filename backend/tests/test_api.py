@@ -132,6 +132,8 @@ async def test_reanalysis_reuses_collected_content_without_recollection(monkeypa
                 analysis_mode="local",
                 include_discovery=True,
                 include_taptap=False,
+                partial=True,
+                warnings=["以下来源没有有效样本：taptap", "B站页面采集提示"],
             )
             session.add(job)
             session.add(
@@ -155,6 +157,8 @@ async def test_reanalysis_reuses_collected_content_without_recollection(monkeypa
         assert response.status_code == 200
         assert response.json()["analysis_mode"] == "full"
         assert response.json()["progress"] == 90
+        assert response.json()["partial"] is False
+        assert response.json()["warnings"] == ["B站页面采集提示"]
         assert response.json()["collection_metrics"]["analysis_only"] is True
         assert ("reanalyze-existing-job", True) in queued
 
