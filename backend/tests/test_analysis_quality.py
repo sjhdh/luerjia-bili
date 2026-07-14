@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -387,6 +389,41 @@ async def test_llm_request_error_exposes_status_without_response_body() -> None:
             await analyzer._post_json(client, system="system", user={"items": []})
 
     assert "sensitive" not in str(captured.value)
+
+
+async def test_llm_json_contract_is_named_in_the_user_message() -> None:
+    settings = Settings(
+        data_dir="data/test-llm-json-contract",
+        openai_base_url="https://example.test/v1",
+        openai_api_key="secret",
+        openai_model="gpt-5.6",
+        _env_file=None,
+    )
+    analyzer = LLMAnalyzer(settings)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        user_message = body["messages"][1]["content"]
+        assert user_message.startswith("Return json for this request:\n")
+        assert json.loads(user_message.split("\n", 1)[1]) == {"items": []}
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "choices": [{"message": {"content": '{"rows": []}'}}],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 3},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        payload, usage = await analyzer._post_json(
+            client,
+            system="Return a structured object.",
+            user={"items": []},
+        )
+
+    assert payload == {"rows": []}
+    assert usage == {"prompt_tokens": 8, "completion_tokens": 3}
 
 
 async def test_full_analysis_stops_after_cancellation_check(monkeypatch) -> None:
