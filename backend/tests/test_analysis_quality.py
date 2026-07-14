@@ -8,9 +8,13 @@ from backend.app.models import ContentItem, Job
 from backend.app.services.analyzer import (
     AnalysisCancelled,
     SentimentEngine,
+    _build_sentiment_calibration,
+    _distribution,
     _extract_keywords,
     _extract_topics,
+    _lightweight_llm_selection,
     _rule_topic_assignments,
+    _validated_llm_topics,
     analyze_job,
 )
 from backend.app.services.llm_analyzer import (
@@ -96,6 +100,152 @@ def test_business_topics_are_stable_and_risk_ranked() -> None:
     assert topics[0]["risk_score"] >= topics[-1]["risk_score"]
 
 
+def test_experience_topic_requires_specific_product_evidence() -> None:
+    assert _validated_llm_topics("终于开服了，马上下载", ["experience", "community"]) == [
+        "community"
+    ]
+    assignments = _rule_topic_assignments([item(1, "移动端掉帧严重")])
+    assert "performance" in assignments[1]
+    assert "experience" not in assignments[1]
+
+
+def test_lightweight_router_prioritizes_ambiguous_high_value_groups() -> None:
+    rows = [item(index, f"普通讨论 {index}") for index in range(1, 21)]
+    rows[0].confidence = 0.55
+    rows[1].text = "玩法很好玩，但是掉帧严重"
+    rows[2].likes = 500
+    assignments: dict[int, list[str]] = {row.id: [] for row in rows}
+    assignments[rows[3].id] = ["performance", "experience"]
+
+    selected, reasons, unique_count = _lightweight_llm_selection(
+        rows,
+        assignments,
+        min_items=4,
+        max_ratio=0.2,
+        confidence_threshold=0.7,
+    )
+
+    assert len(selected) == 4
+    assert {1, 2, 3}.issubset({row.id for row in selected})
+    assert "low_confidence" in reasons[1]
+    assert "sentiment_conflict" in reasons[2]
+    assert "high_engagement" in reasons[3]
+    assert sum("calibration_sample" in row for row in reasons.values()) == 1
+    assert unique_count == 20
+
+
+@pytest.mark.parametrize(
+    ("sample_count", "expected_routed"),
+    [(200, 200), (1_000, 800), (5_000, 1_000), (6_266, 1_253)],
+)
+def test_lightweight_router_sends_small_samples_and_scales_at_twenty_percent(
+    sample_count: int, expected_routed: int
+) -> None:
+    rows = [item(index, f"边界样本 {index}") for index in range(1, sample_count + 1)]
+
+    selected, _reasons, unique_count = _lightweight_llm_selection(
+        rows,
+        {row.id: [] for row in rows},
+        min_items=800,
+        max_ratio=0.2,
+        confidence_threshold=0.7,
+    )
+
+    assert unique_count == sample_count
+    assert len(selected) == expected_routed
+
+
+def test_lightweight_calibration_corrects_aggregate_and_rounds_to_100_percent() -> None:
+    audit_rows = [item(index, f"审计样本 {index}") for index in range(1, 31)]
+    labels = {
+        row.id: LLMLabel(
+            "positive" if row.id <= 18 else "neutral" if row.id <= 27 else "negative",
+            0.95,
+            [],
+        )
+        for row in audit_rows
+    }
+    calibration = _build_sentiment_calibration(
+        audit_rows,
+        labels,
+        {row.id: "neutral" for row in audit_rows},
+        {row.id: ["calibration_sample"] for row in audit_rows},
+    )
+
+    assert calibration is not None
+    assert calibration["sample_size"] == 30
+
+    population = [item(index, f"总体样本 {index}") for index in range(101, 201)]
+    for row in population:
+        row.raw_meta = {
+            "analysis": {
+                "source": "local",
+                "local_sentiment": "neutral",
+            }
+        }
+    distribution = _distribution(population, calibration)
+
+    assert distribution["estimated"] is True
+    assert sum(entry["count"] for entry in distribution["items"]) == 100
+    assert sum(entry["percentage"] for entry in distribution["items"]) == 100.0
+    assert distribution["items"][0]["percentage"] > distribution["items"][1]["percentage"]
+    assert distribution["items"][1]["percentage"] > distribution["items"][2]["percentage"]
+
+
+async def test_lightweight_mode_only_sends_intelligently_routed_text(monkeypatch) -> None:
+    settings = Settings(
+        data_dir="data/test-lightweight-routing",
+        lightweight_analysis=True,
+        openai_base_url="https://example.test/v1",
+        openai_api_key="secret",
+        openai_model="gpt-5.6",
+        _env_file=None,
+    )
+    rows = [item(index, f"没有明显倾向的普通讨论 {index}") for index in range(1, 21)]
+    observed: list[int] = []
+
+    async def classify(_self, items, keyword, progress=None):
+        observed.extend(row.id for row in items)
+        return LLMAnalysisResult(
+            labels={row.id: LLMLabel("neutral", 0.9, []) for row in items},
+            unique_input_count=len(items),
+            batch_count=1,
+        )
+
+    async def report(_self, **_kwargs):
+        return None, None, {}
+
+    monkeypatch.setattr(LLMAnalyzer, "classify", classify)
+    monkeypatch.setattr(LLMAnalyzer, "generate_report", report)
+    payload, warnings = await analyze_job(
+        settings,
+        Job(
+            id="lightweight-route-job",
+            keyword="失控进化",
+            status="analyzing",
+            analysis_mode="lightweight",
+            include_discovery=True,
+            include_taptap=False,
+        ),
+        [],
+        [],
+        rows,
+    )
+
+    assert len(observed) == 20
+    assert payload["analysis"]["mode"] == "lightweight"
+    assert payload["analysis"]["llm_routed_count"] == 20
+    assert payload["analysis"]["llm_route_ratio"] == 1.0
+    assert payload["analysis"]["llm_success_rate"] == 1.0
+    assert not any("其余使用" in warning for warning in warnings)
+    assert _validated_llm_topics("建造 UI 的按键交互很难用", ["experience"]) == [
+        "experience"
+    ]
+    assert _validated_llm_topics("下线后房子被拆光，时间成本太高", ["experience", "time_cost"]) == [
+        "time_cost"
+    ]
+
+
 async def test_llm_batches_are_validated_deduplicated_and_confidence_calibrated(
     monkeypatch,
 ) -> None:
@@ -167,7 +317,7 @@ async def test_llm_empty_topics_clear_local_keyword_false_positives(monkeypatch)
             id="topic-clear-job",
             keyword="失控进化",
             status="analyzing",
-            analysis_mode="enhanced",
+            analysis_mode="full",
             include_discovery=True,
             include_taptap=False,
         ),
@@ -239,7 +389,7 @@ async def test_llm_request_error_exposes_status_without_response_body() -> None:
     assert "sensitive" not in str(captured.value)
 
 
-async def test_enhanced_analysis_stops_after_cancellation_check(monkeypatch) -> None:
+async def test_full_analysis_stops_after_cancellation_check(monkeypatch) -> None:
     settings = Settings(
         data_dir="data/test-llm-cancel",
         lightweight_analysis=True,
@@ -265,7 +415,7 @@ async def test_enhanced_analysis_stops_after_cancellation_check(monkeypatch) -> 
                 id="cancel-analysis-job",
                 keyword="失控进化",
                 status="analyzing",
-                analysis_mode="enhanced",
+                analysis_mode="full",
                 include_discovery=True,
                 include_taptap=False,
             ),
@@ -328,7 +478,7 @@ async def test_taptap_quality_scores_the_active_llm_before_rating_override(
             id="taptap-quality-job",
             keyword="失控进化",
             status="analyzing",
-            analysis_mode="enhanced",
+            analysis_mode="full",
             include_discovery=False,
             include_taptap=True,
         ),

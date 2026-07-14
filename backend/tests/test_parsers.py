@@ -9,6 +9,7 @@ from backend.app.sources.parsers import (
     parse_bilibili_video_html,
     parse_taptap_app_html,
     parse_taptap_reviews_html,
+    parse_taptap_search_html,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -70,3 +71,30 @@ def test_taptap_parser_extracts_rating_tags_and_reviews() -> None:
     assert app.rating_count == 12_000
     assert app.tags[0] == {"name": "画面优秀", "count": 120}
     assert [review.rating for review in reviews] == [5, 1]
+
+
+def test_current_taptap_search_card_uses_schema_title_and_deduplicates_links() -> None:
+    html = (FIXTURES / "taptap_search_current.html").read_text("utf-8")
+    apps = parse_taptap_search_html(html)
+
+    assert len(apps) == 1
+    assert apps[0].external_id == "168332"
+    assert apps[0].title == "原神"
+    assert apps[0].url == "https://www.taptap.cn/app/168332"
+    assert apps[0].score == 7.9
+
+
+def test_current_taptap_app_board_extracts_score_and_rating_count() -> None:
+    html = (FIXTURES / "taptap_app_current.html").read_text("utf-8")
+    app = parse_taptap_app_html(
+        html,
+        CollectedApp(
+            external_id="733908",
+            title="占位",
+            url="https://www.taptap.cn/app/733908",
+        ),
+    )
+
+    assert app.title == "失控进化"
+    assert app.score == 8.1
+    assert app.rating_count == 13_000

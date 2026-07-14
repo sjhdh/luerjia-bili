@@ -35,7 +35,7 @@ async def test_new_browser_context_uses_the_active_proxy(tmp_path: Path, monkeyp
     async def runtime():
         return FakeRuntime()
 
-    async def active_proxy():
+    async def active_proxy(_platform):
         return "http://192.0.2.30:8080"
 
     monkeypatch.setattr(manager, "_runtime", runtime)
@@ -43,6 +43,33 @@ async def test_new_browser_context_uses_the_active_proxy(tmp_path: Path, monkeyp
     context = await manager.connect(platform="bilibili")
     assert context is fake_context
     assert captured["proxy"] == {"server": "http://192.0.2.30:8080"}
+
+
+async def test_taptap_risk_can_rotate_an_auto_proxy_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = BilibiliBrowserManager(Settings(data_dir=tmp_path, _env_file=None))
+    manager.proxy._state.mode = "auto"
+    manager.proxy._state.auto_rotate_on_risk = True
+    manager.proxy._state.risk_rotation_limit = 2
+    manager._sessions["taptap"].risk_detected = True
+    closed: list[str] = []
+
+    async def rotate() -> dict[str, object]:
+        return {
+            "active_proxy": "http://192.0.2.31:8080",
+            "platform_scope": "taptap",
+        }
+
+    async def close_platform(platform: str) -> None:
+        closed.append(platform)
+
+    monkeypatch.setattr(manager.proxy, "rotate", rotate)
+    monkeypatch.setattr(manager, "close_platform", close_platform)
+
+    assert await manager.recover_taptap_risk(0) == "http://192.0.2.31:8080"
+    assert closed == ["taptap"]
+    assert await manager.recover_taptap_risk(2) is None
 
 
 async def test_existing_risk_page_is_not_replaced_when_workspace_reopens(

@@ -10,6 +10,8 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
+export type AnalysisMode = "local" | "lightweight" | "full";
+
 export interface Job {
   id: string;
   keyword: string;
@@ -17,7 +19,7 @@ export interface Job {
   stage: string;
   progress: number;
   message: string;
-  analysis_mode: "local" | "enhanced";
+  analysis_mode: AnalysisMode;
   time_range: string;
   depth: string;
   official_bilibili_url: string | null;
@@ -63,12 +65,21 @@ export interface AuthSession {
 
 export type ProxyMode = "direct" | "manual" | "auto";
 export type ProxyProtocol = "http" | "https" | "socks4" | "socks5";
+export type ProxyPoolProvider = "smart" | "scdn" | "zdopen";
+export type ProxyPlatformScope = "taptap" | "all";
 
 export interface ProxySettings {
   mode: ProxyMode;
   protocol: ProxyProtocol;
   country_code: string;
   pool_size: number;
+  pool_provider: ProxyPoolProvider;
+  platform_scope: ProxyPlatformScope;
+  allow_tls_interception: boolean;
+  auto_rotate_on_risk: boolean;
+  risk_rotation_limit: number;
+  zdopen_app_id: string;
+  zdopen_configured: boolean;
   manual_proxy: string;
   active_proxy: string | null;
   active_source: "direct" | "manual" | "pool";
@@ -77,7 +88,10 @@ export interface ProxySettings {
   last_checked_at: string | null;
   last_error: string | null;
   target_results: Record<string, boolean>;
+  active_provider: string | null;
+  tls_intercepted: boolean;
   pool_api: string;
+  pool_apis: Record<string, string>;
 }
 
 export interface ProxyCheck {
@@ -88,6 +102,8 @@ export interface ProxyCheck {
   message: string;
   checked_at: string;
   targets: Record<string, boolean>;
+  provider: string | null;
+  tls_intercepted: boolean;
 }
 
 export interface ShareLink {
@@ -106,6 +122,7 @@ export interface DistributionItem {
 export interface Distribution {
   total: number;
   available?: boolean;
+  estimated?: boolean;
   items: DistributionItem[];
 }
 
@@ -171,12 +188,22 @@ export interface ReportPayload {
     weighted_negative?: number;
   }>;
   analysis?: {
-    mode: "local" | "enhanced";
+    mode: AnalysisMode;
     sentiment_source: string;
     llm_model?: string;
     prompt_version?: string;
     llm_coverage?: number;
     llm_covered_count?: number;
+    llm_routed_count?: number;
+    llm_route_ratio?: number;
+    llm_row_route_ratio?: number;
+    llm_success_rate?: number;
+    llm_route_reasons?: Record<string, number>;
+    llm_calibration_unique_count?: number;
+    llm_targeted_unique_count?: number;
+    llm_total_unique_input_count?: number;
+    sentiment_estimation?: string;
+    sentiment_calibration_sample_size?: number;
     llm_unique_input_count?: number;
     llm_batch_count?: number;
     local_llm_agreement?: number;

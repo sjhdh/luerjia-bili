@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import BrowserWorkspace from "../components/BrowserWorkspace";
 import StatusBadge from "../components/StatusBadge";
-import type { BrowserSession, Job, ProxySettings } from "../types";
+import type { AnalysisMode, BrowserSession, Job, ProxySettings } from "../types";
 
 type Platform = BrowserSession["platform"];
 
@@ -27,8 +27,11 @@ function emptySession(platform: Platform): BrowserSession {
 const emptyProxy: ProxySettings = {
   mode: "direct", protocol: "https", country_code: "CN", pool_size: 5, manual_proxy: "", active_proxy: null,
   active_source: "direct", exit_ip: null, latency_ms: null, last_checked_at: null, last_error: null,
+  pool_provider: "smart", platform_scope: "taptap", allow_tls_interception: false, auto_rotate_on_risk: true,
+  risk_rotation_limit: 2, zdopen_app_id: "", zdopen_configured: false, active_provider: null, tls_intercepted: false,
   target_results: {},
-  pool_api: "https://proxy.scdn.io/api/get_proxy.php"
+  pool_api: "https://proxy.scdn.io/api/get_proxy.php",
+  pool_apis: { scdn: "https://proxy.scdn.io/api/get_proxy.php", zdopen: "http://www.zdopen.com/FreeProxy/Get/" }
 };
 
 const proxyModeLabel = { direct: "服务器直连", manual: "手动代理", auto: "自动代理池" } as const;
@@ -49,7 +52,7 @@ export default function Dashboard() {
   const [includeTapTap, setIncludeTapTap] = useState(true);
   const [timeRange, setTimeRange] = useState("90d");
   const [depth, setDepth] = useState("standard");
-  const [analysisMode, setAnalysisMode] = useState("enhanced");
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("lightweight");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -110,7 +113,7 @@ export default function Dashboard() {
     <div className="workspace workbench">
       <header className="workbench-header">
         <div><p className="eyebrow">OPINION SIGNAL DESK</p><h1>舆情任务台</h1><p className="workspace-lede">编排官号、相关视频与玩家评价采集</p></div>
-        <div className="desk-state"><Radio size={16} /><span>单任务通道</span><small>页面采集 · GPT-5.6 复合分析</small></div>
+        <div className="desk-state"><Radio size={16} /><span>单任务通道</span><small>页面采集 · 智能路由分析</small></div>
       </header>
 
       <section className="signal-rail" aria-label="数据源与网络状态">
@@ -153,7 +156,7 @@ export default function Dashboard() {
           <div className="run-options">
             <label className="field"><span>时间范围</span><select value={timeRange} onChange={(event) => setTimeRange(event.target.value)}><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="90d">近 90 天</option><option value="180d">近 180 天</option><option value="all">全部</option></select></label>
             <label className="field"><span>采集深度</span><select value={depth} onChange={(event) => setDepth(event.target.value)}><option value="light">轻量</option><option value="standard">标准</option><option value="deep">深度</option></select></label>
-            <fieldset className="field mode-field"><legend>分析模式</legend><div className="segmented"><button type="button" className={analysisMode === "local" ? "active" : ""} onClick={() => setAnalysisMode("local")}>本地回退</button><button type="button" className={analysisMode === "enhanced" ? "active" : ""} onClick={() => setAnalysisMode("enhanced")}>GPT-5.6 复合</button></div></fieldset>
+            <fieldset className="field mode-field"><legend>分析模式</legend><div className="segmented three-way"><button type="button" className={analysisMode === "local" ? "active" : ""} onClick={() => setAnalysisMode("local")}>本地</button><button type="button" className={analysisMode === "lightweight" ? "active" : ""} onClick={() => setAnalysisMode("lightweight")}>轻量 LLM</button><button type="button" className={analysisMode === "full" ? "active" : ""} onClick={() => setAnalysisMode("full")}>全量 LLM</button></div></fieldset>
           </div>
         </form>
       </section>

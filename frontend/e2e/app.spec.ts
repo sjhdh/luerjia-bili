@@ -2,8 +2,8 @@ import { expect, test } from "@playwright/test";
 import { demoReport } from "./fixtures";
 
 const platformState = (platform: "bilibili" | "taptap", authenticated = true) => ({ platform, running: true, authenticated, login_method: "window", qr_ready: false, qr_expires_at: null, message: authenticated ? "登录态可用" : "尚未登录", workspace_ready: true, current_url: platform === "bilibili" ? "https://passport.bilibili.com/login" : "https://www.taptap.cn", page_title: `${platform} 登录`, risk_detected: false });
-const directProxy = { mode: "direct", protocol: "https", country_code: "CN", pool_size: 5, manual_proxy: "", active_proxy: null, active_source: "direct", exit_ip: null, latency_ms: null, last_checked_at: null, last_error: null, target_results: {}, pool_api: "https://proxy.scdn.io/api/get_proxy.php" };
-const autoProxy = { ...directProxy, mode: "auto", active_proxy: "http://192.0.2.20:8080", active_source: "pool", exit_ip: "203.0.113.20", latency_ms: 85, last_checked_at: "2026-07-13T12:00:00+00:00" };
+const directProxy = { mode: "direct", protocol: "https", country_code: "CN", pool_size: 5, pool_provider: "smart", platform_scope: "taptap", allow_tls_interception: false, auto_rotate_on_risk: true, risk_rotation_limit: 2, zdopen_app_id: "", zdopen_configured: false, manual_proxy: "", active_proxy: null, active_source: "direct", active_provider: null, exit_ip: null, latency_ms: null, last_checked_at: null, last_error: null, target_results: {}, tls_intercepted: false, pool_api: "https://proxy.scdn.io/api/get_proxy.php", pool_apis: { scdn: "https://proxy.scdn.io/api/get_proxy.php", zdopen: "http://www.zdopen.com/FreeProxy/Get/" } };
+const autoProxy = { ...directProxy, mode: "auto", active_proxy: "http://192.0.2.20:8080", active_source: "pool", active_provider: "scdn", exit_ip: "203.0.113.20", latency_ms: 85, last_checked_at: "2026-07-13T12:00:00+00:00" };
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/v1/auth/session", (route) => route.fulfill({ json: { authenticated: true, username: "operator" } }));
@@ -11,7 +11,7 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/v1/platforms/taptap/session", (route) => route.fulfill({ json: platformState("taptap") }));
   await page.route("**/api/v1/proxy", (route) => route.fulfill({ json: route.request().method() === "PUT" ? autoProxy : directProxy }));
   await page.route("**/api/v1/proxy/rotate", (route) => route.fulfill({ json: autoProxy }));
-  await page.route("**/api/v1/proxy/test", (route) => route.fulfill({ json: { proxy: autoProxy.active_proxy, reachable: true, latency_ms: 85, exit_ip: autoProxy.exit_ip, message: "代理出口可用", checked_at: autoProxy.last_checked_at, targets: { bilibili: true, taptap: true } } }));
+  await page.route("**/api/v1/proxy/test", (route) => route.fulfill({ json: { proxy: autoProxy.active_proxy, reachable: true, latency_ms: 85, exit_ip: autoProxy.exit_ip, message: "代理出口可用", checked_at: autoProxy.last_checked_at, targets: { bilibili: true, taptap: true }, provider: "scdn", tls_intercepted: false } }));
   await page.route("**/api/v1/jobs", async (route) => {
     await route.fulfill({ json: [{ id: "demo", keyword: "失控进化", status: "completed", stage: "报告已完成", progress: 100, message: "报告已生成", analysis_mode: "local", time_range: "90d", depth: "standard", official_bilibili_url: "https://space.bilibili.com/3546785396034301", official_mid: "3546785396034301", include_discovery: true, include_taptap: true, taptap_app_id: "733908", taptap_app_url: "https://www.taptap.cn/app/733908", taptap_candidates: [], collection_metrics: {}, warnings: [], partial: false, cancel_requested: false, created_at: "2026-07-13T04:00:00Z", updated_at: "2026-07-13T04:30:00Z", finished_at: "2026-07-13T04:30:00Z" }] });
   });
@@ -38,6 +38,7 @@ test("workbench exposes official, discovery, and TapTap inputs", async ({ page }
   await expect(page.getByRole("button", { name: "开始采集与分析" })).toBeDisabled();
   await page.getByPlaceholder("输入游戏、产品或事件").fill("失控进化");
   await page.getByPlaceholder("https://space.bilibili.com/3546785396034301").fill("https://space.bilibili.com/3546785396034301");
+  for (const mode of ["本地", "轻量 LLM", "全量 LLM"]) await expect(page.getByRole("button", { name: mode, exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "开始采集与分析" })).toBeEnabled();
   const dimensions = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.innerWidth + 1);
@@ -50,6 +51,8 @@ test("network route settings switch to the automatic proxy pool", async ({ page 
   await expect(page.getByRole("heading", { name: "网络路由" })).toBeVisible();
   await expect(page.getByText("服务器直连", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "自动代理池" }).click();
+  await expect(page.getByLabel("允许 TLS 兼容", { exact: false })).not.toBeChecked();
+  await expect(page.getByLabel("TapTap 风控自动换线", { exact: false })).toBeChecked();
   await page.getByLabel("候选数量").fill("3");
   await page.getByRole("button", { name: "保存并切换" }).click();
   await expect(page.getByText("自动代理池已生效", { exact: false })).toBeVisible();
@@ -82,6 +85,8 @@ test("report separates source blocks and remains horizontally contained", async 
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
   }
   await expect(page.locator(".ai-evidence-list").getByText("非法组队举报后没有反馈，掉帧和发热也很明显。").first()).toBeVisible();
+  await expect(page.locator(".model-metrics span").filter({ hasText: "分层校准样本" })).toBeVisible();
+  await expect(page.getByText("轻量 LLM 分层校准估计 · 平台等权", { exact: true }).first()).toBeVisible();
   const dimensions = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.innerWidth + 1);
   await page.screenshot({ path: testInfo.outputPath("report.png"), fullPage: true });

@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=3, ge=1, le=5)
     llm_max_output_tokens: int = Field(default=8192, ge=1024, le=32768)
     llm_confidence_threshold: float = Field(default=0.62, ge=0.5, le=0.9)
+    llm_lightweight_min_items: int = Field(default=800, ge=20, le=5000)
+    llm_lightweight_max_ratio: float = Field(default=0.2, ge=0.05, le=0.5)
+    llm_lightweight_confidence_threshold: float = Field(default=0.7, ge=0.5, le=0.9)
+    zdopen_app_id: str | None = None
+    zdopen_akey: SecretStr | None = Field(default=None, repr=False)
     raw_retention_days: int = 30
     report_retention_days: int = 180
     crawl_min_delay_seconds: float = 1.2
@@ -95,6 +100,10 @@ class Settings(BaseSettings):
     @property
     def openai_api_key_value(self) -> str:
         return self.openai_api_key.get_secret_value() if self.openai_api_key else ""
+
+    @property
+    def zdopen_akey_value(self) -> str:
+        return self.zdopen_akey.get_secret_value() if self.zdopen_akey else ""
 
     @property
     def allowed_hosts(self) -> list[str]:

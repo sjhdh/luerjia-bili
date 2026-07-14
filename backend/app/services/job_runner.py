@@ -310,6 +310,12 @@ class JobRunner:
                 or taptap_incomplete
             )
             try:
+                analysis_stage = {
+                    "local": "本地舆情分析",
+                    "lightweight": "轻量 LLM 分析",
+                    "full": "全量 LLM 分析",
+                    "enhanced": "全量 LLM 分析",
+                }.get(current.analysis_mode, "舆情分析")
                 payload, analysis_warnings = await analyze_job(
                     self.settings,
                     current,
@@ -320,7 +326,7 @@ class JobRunner:
                     analysis_progress=lambda progress, message: self._set_status(
                         job_id,
                         JobStatus.ANALYZING,
-                        "GPT-5.6 复合分析",
+                        analysis_stage,
                         progress,
                         message,
                     ),

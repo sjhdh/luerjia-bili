@@ -11,7 +11,7 @@ class JobCreate(BaseModel):
     keyword: str = Field(min_length=2, max_length=64)
     time_range: Literal["7d", "30d", "90d", "180d", "all"] = "90d"
     depth: Literal["light", "standard", "deep"] = "standard"
-    analysis_mode: Literal["local", "enhanced"] = "local"
+    analysis_mode: Literal["local", "lightweight", "full"] = "lightweight"
     official_bilibili_url: str | None = Field(default=None, max_length=300)
     official_mid: str | None = Field(default=None, max_length=40)
     include_discovery: bool = True
@@ -78,7 +78,7 @@ class TapTapSelection(BaseModel):
 
 
 class ReanalysisRequest(BaseModel):
-    analysis_mode: Literal["local", "enhanced"] = "enhanced"
+    analysis_mode: Literal["local", "lightweight", "full"] = "lightweight"
 
 
 class BrowserSessionRead(BaseModel):
@@ -110,8 +110,15 @@ class ProxySettingsUpdate(BaseModel):
     mode: Literal["direct", "manual", "auto"]
     protocol: Literal["http", "https", "socks4", "socks5"] = "https"
     country_code: str = Field(default="CN", max_length=2)
-    pool_size: int = Field(default=5, ge=1, le=20)
+    pool_size: int = Field(default=5, ge=1, le=100)
     manual_proxy: str = Field(default="", max_length=300)
+    pool_provider: Literal["smart", "scdn", "zdopen"] = "smart"
+    platform_scope: Literal["taptap", "all"] = "taptap"
+    allow_tls_interception: bool = False
+    auto_rotate_on_risk: bool = True
+    risk_rotation_limit: int = Field(default=2, ge=0, le=5)
+    zdopen_app_id: str = Field(default="", max_length=80)
+    zdopen_akey: str = Field(default="", max_length=64)
 
     @field_validator("country_code")
     @classmethod
@@ -131,6 +138,8 @@ class ProxySettingsUpdate(BaseModel):
 class ProxyTestRequest(BaseModel):
     proxy: str | None = Field(default=None, max_length=300)
     protocol: Literal["http", "https", "socks4", "socks5"] | None = None
+    allow_tls_interception: bool | None = None
+    platform_scope: Literal["taptap", "all"] | None = None
 
 
 class ProxySettingsRead(BaseModel):
@@ -138,6 +147,13 @@ class ProxySettingsRead(BaseModel):
     protocol: Literal["http", "https", "socks4", "socks5"]
     country_code: str
     pool_size: int
+    pool_provider: Literal["smart", "scdn", "zdopen"] = "smart"
+    platform_scope: Literal["taptap", "all"] = "taptap"
+    allow_tls_interception: bool = False
+    auto_rotate_on_risk: bool = True
+    risk_rotation_limit: int = 2
+    zdopen_app_id: str = ""
+    zdopen_configured: bool = False
     manual_proxy: str
     active_proxy: str | None
     active_source: Literal["direct", "manual", "pool"]
@@ -146,7 +162,10 @@ class ProxySettingsRead(BaseModel):
     last_checked_at: str | None
     last_error: str | None
     target_results: dict[str, bool] = Field(default_factory=dict)
+    active_provider: str | None = None
+    tls_intercepted: bool = False
     pool_api: str
+    pool_apis: dict[str, str] = Field(default_factory=dict)
 
 
 class ProxyCheckRead(BaseModel):
@@ -157,6 +176,8 @@ class ProxyCheckRead(BaseModel):
     message: str
     checked_at: str
     targets: dict[str, bool] = Field(default_factory=dict)
+    provider: str | None = None
+    tls_intercepted: bool = False
 
 
 class LoginRequest(BaseModel):

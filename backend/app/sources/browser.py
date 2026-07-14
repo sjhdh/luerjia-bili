@@ -10,7 +10,15 @@ from urllib.parse import urlsplit
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 
 from ..config import Settings
-from ..services.proxy import ProxyCheck, ProxyManager, ProxyMode, ProxyProtocol
+from ..services.proxy import (
+    ProxyCheck,
+    ProxyManager,
+    ProxyMode,
+    ProxyPlatformScope,
+    ProxyPoolProvider,
+    ProxyProtocol,
+    ProxyUnavailableError,
+)
 
 PlatformName = Literal["bilibili", "taptap"]
 LOGIN_URLS: dict[PlatformName, str] = {
@@ -66,7 +74,7 @@ class BilibiliBrowserManager:
         async with session.lock:
             if session.context is None:
                 runtime = await self._runtime()
-                proxy_server = await self.proxy.ensure_active()
+                proxy_server = await self.proxy.ensure_active(platform)
                 profile = self._profile_dir(platform)
                 profile.mkdir(parents=True, exist_ok=True)
                 launch_args = (
@@ -83,6 +91,7 @@ class BilibiliBrowserManager:
                     locale="zh-CN",
                     args=launch_args,
                     proxy={"server": proxy_server} if proxy_server else None,
+                    ignore_https_errors=self.proxy.ignore_https_errors(platform),
                 )
             context = session.context
         if open_login:
@@ -282,6 +291,13 @@ class BilibiliBrowserManager:
         country_code: str,
         pool_size: int,
         manual_proxy: str,
+        pool_provider: ProxyPoolProvider,
+        platform_scope: ProxyPlatformScope,
+        allow_tls_interception: bool,
+        auto_rotate_on_risk: bool,
+        risk_rotation_limit: int,
+        zdopen_app_id: str,
+        zdopen_akey: str,
     ) -> dict[str, object]:
         state = await self.proxy.configure(
             mode=mode,
@@ -289,6 +305,13 @@ class BilibiliBrowserManager:
             country_code=country_code,
             pool_size=pool_size,
             manual_proxy=manual_proxy,
+            pool_provider=pool_provider,
+            platform_scope=platform_scope,
+            allow_tls_interception=allow_tls_interception,
+            auto_rotate_on_risk=auto_rotate_on_risk,
+            risk_rotation_limit=risk_rotation_limit,
+            zdopen_app_id=zdopen_app_id,
+            zdopen_akey=zdopen_akey,
         )
         for platform in ("bilibili", "taptap"):
             await self.close_platform(platform)
@@ -301,9 +324,39 @@ class BilibiliBrowserManager:
         return state
 
     async def test_proxy(
-        self, value: str | None = None, protocol: ProxyProtocol | None = None
+        self,
+        value: str | None = None,
+        protocol: ProxyProtocol | None = None,
+        *,
+        allow_tls_interception: bool | None = None,
+        platform_scope: ProxyPlatformScope | None = None,
     ) -> ProxyCheck:
-        return await self.proxy.test(value, protocol)
+        return await self.proxy.test(
+            value,
+            protocol,
+            allow_tls_interception=allow_tls_interception,
+            platform_scope=platform_scope,
+        )
+
+    async def recover_taptap_risk(self, attempt: int) -> str | None:
+        session = self._sessions["taptap"]
+        enabled, limit = self.proxy.risk_rotation_policy()
+        state = self.proxy.state()
+        if (
+            not session.risk_detected
+            or not enabled
+            or attempt >= limit
+            or state["mode"] != "auto"
+        ):
+            return None
+        try:
+            next_state = await self.proxy.rotate()
+        except ProxyUnavailableError:
+            return None
+        await self.close_platform("taptap")
+        if next_state.get("platform_scope") == "all":
+            await self.close_platform("bilibili")
+        return str(next_state.get("active_proxy") or "") or None
 
     async def clear_profile(self, platform: PlatformName = "bilibili") -> None:
         await self.close_platform(platform)
