@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 import re
 from collections import Counter, defaultdict
@@ -35,7 +36,7 @@ STOPWORDS = {
     "现在", "直接", "不能", "不是", "不会", "知道", "觉得", "进行", "能够", "已经", "需要", "里面", "东西",
     "不了", "只能", "只要", "可能", "应该", "也许", "希望", "建议", "问题", "请问", "求问", "有人", "有没有",
     "大家", "朋友", "兄弟", "大佬", "世界", "这里", "这样", "这么", "有点", "进去", "出来", "对面", "明白",
-    "回复", "评论", "弹幕", "多少", "体验",
+    "回复", "评论", "弹幕", "多少", "体验", "结果", "情况",
     "官方", "玩家", "手机", "模式", "测试", "上线", "失控", "进化", "rust", "doge", "吃瓜", "大哭", "笑哭",
     "星星", "思考", "打call", "链接", "隐藏", "三连", "第一", "哈哈", "哈哈哈", "666", "啊啊", "一点",
 }
@@ -69,7 +70,7 @@ TOPIC_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "id": "experience",
         "label": "操作、建造与交互",
-        "keywords": ("手感", "操作", "建造", "交互", "射击", "移动", "按键", "搓玻璃", "一键盖家", "领地柜", "科技UI", "建造UI", "电力UI"),
+        "keywords": ("手感", "操作", "操控", "建造", "交互", "射击", "瞄准", "开火", "后坐力", "按键", "键位", "跑动", "冲刺", "镜头", "搓玻璃", "一键盖家", "领地柜", "建筑系统", "建造系统", "科技UI", "建造UI", "电力UI"),
     },
     {
         "id": "visual_audio",
@@ -99,6 +100,17 @@ DOMAIN_PHRASES = tuple(
 )
 BRACKET_EMOJI = re.compile(r"\[[^\]]{1,30}\]")
 LINK_MARKER = re.compile(r"\[链接已隐藏\]|https?://\S+", re.IGNORECASE)
+LLM_TOPIC_EVIDENCE = {
+    "experience": (
+        "手感", "操作", "操控", "建造", "交互", "射击", "瞄准", "开火", "后坐力",
+        "按键", "键位", "跑动", "冲刺", "搓玻璃", "一键盖家", "领地柜", "电力ui",
+        "建造ui", "科技ui", "建筑系统", "建造系统", "镜头",
+    ),
+}
+LLM_MODES = {"lightweight", "full", "enhanced"}
+LIGHTWEIGHT_COMPLEXITY = re.compile(
+    r"(?:但是|不过|然而|反而|虽然|却|结果|本来|没想到|呵呵|笑死|阴阳|讽刺|先.+后)"
+)
 
 AnalysisProgress = Callable[[int, str], Awaitable[None]]
 CancellationCheck = Callable[[], Awaitable[bool]]
@@ -211,18 +223,66 @@ class SentimentEngine:
         return "neutral", 0.52
 
 
-def _distribution(items: list[ContentItem]) -> dict[str, Any]:
-    counts = Counter(item.sentiment or "neutral" for item in items)
-    total = sum(counts.values())
+def _rounded_parts(values: dict[str, float], units: int) -> dict[str, int]:
+    total = sum(values.values())
+    if total <= 0:
+        return {key: 0 for key in SENTIMENTS}
+    raw = {key: max(0.0, values.get(key, 0.0)) / total * units for key in SENTIMENTS}
+    rounded = {key: math.floor(value) for key, value in raw.items()}
+    remaining = units - sum(rounded.values())
+    order = sorted(
+        SENTIMENTS,
+        key=lambda key: (raw[key] - rounded[key], -SENTIMENTS.index(key)),
+        reverse=True,
+    )
+    for key in order[:remaining]:
+        rounded[key] += 1
+    return rounded
+
+
+def _distribution(
+    items: list[ContentItem], calibration: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    raw_counts = {key: 0.0 for key in SENTIMENTS}
+    estimated = False
+    for item in items:
+        analysis = dict((item.raw_meta or {}).get("analysis") or {})
+        source = str(analysis.get("source") or "")
+        probabilities: dict[str, float] | None = None
+        if calibration and item.platform == "bilibili" and source != "llm":
+            local_sentiment = str(
+                analysis.get("local_sentiment") or item.sentiment or "neutral"
+            )
+            stratum = "|".join((item.source_scope, item.kind, local_sentiment))
+            row = calibration.get("strata", {}).get(stratum)
+            if not row:
+                row = calibration.get("local", {}).get(local_sentiment)
+            if isinstance(row, dict):
+                candidate = row.get("probabilities")
+                if isinstance(candidate, dict):
+                    probabilities = {
+                        key: max(0.0, float(candidate.get(key, 0.0)))
+                        for key in SENTIMENTS
+                    }
+                    estimated = True
+        if probabilities and sum(probabilities.values()) > 0:
+            for key in SENTIMENTS:
+                raw_counts[key] += probabilities[key]
+        else:
+            raw_counts[item.sentiment or "neutral"] += 1.0
+    total = len(items)
+    counts = _rounded_parts(raw_counts, total)
+    percentage_tenths = _rounded_parts(raw_counts, 1000) if total else {key: 0 for key in SENTIMENTS}
     return {
         "total": total,
         "available": total > 0,
+        "estimated": estimated,
         "items": [
             {
                 "name": key,
                 "label": SENTIMENT_CN[key],
                 "count": counts[key],
-                "percentage": round(counts[key] / total * 100, 1) if total else 0,
+                "percentage": percentage_tenths[key] / 10,
             }
             for key in SENTIMENTS
         ],
@@ -234,15 +294,20 @@ def _blend_bilibili(comments: dict[str, Any], danmakus: dict[str, Any]) -> dict[
         return danmakus
     if not danmakus["total"]:
         return comments
+    weighted_values = {
+        key: comments["items"][index]["percentage"] * 0.8
+        + danmakus["items"][index]["percentage"] * 0.2
+        for index, key in enumerate(SENTIMENTS)
+    }
+    percentage_tenths = _rounded_parts(weighted_values, 1000)
     items = []
     for index, key in enumerate(SENTIMENTS):
-        percentage = comments["items"][index]["percentage"] * 0.8 + danmakus["items"][index]["percentage"] * 0.2
         items.append(
             {
                 "name": key,
                 "label": SENTIMENT_CN[key],
                 "count": comments["items"][index]["count"] + danmakus["items"][index]["count"],
-                "percentage": round(percentage, 1),
+                "percentage": percentage_tenths[key] / 10,
             }
         )
     return {
@@ -250,6 +315,7 @@ def _blend_bilibili(comments: dict[str, Any], danmakus: dict[str, Any]) -> dict[
         "available": True,
         "items": items,
         "weighted": True,
+        "estimated": bool(comments.get("estimated") or danmakus.get("estimated")),
     }
 
 
@@ -333,6 +399,229 @@ def _rule_topic_assignments(items: list[ContentItem]) -> dict[int, list[str]]:
         ]
         assignments[item.id] = matched
     return assignments
+
+
+def _validated_llm_topics(text: str, topics: list[str]) -> list[str]:
+    content = _clean_analysis_text(text).casefold()
+    return [
+        topic
+        for topic in topics
+        if topic not in LLM_TOPIC_EVIDENCE
+        or any(term.casefold() in content for term in LLM_TOPIC_EVIDENCE[topic])
+    ]
+
+
+def _normalized_analysis_mode(mode: str) -> str:
+    return "full" if mode == "enhanced" else mode
+
+
+def _lightweight_llm_selection(
+    items: list[ContentItem],
+    topic_assignments: dict[int, list[str]],
+    *,
+    min_items: int,
+    max_ratio: float,
+    confidence_threshold: float,
+) -> tuple[list[ContentItem], dict[int, list[str]], int]:
+    """Route the highest-value ambiguous text groups to the external model."""
+    if not items:
+        return [], {}, 0
+
+    grouped: dict[str, list[ContentItem]] = defaultdict(list)
+    for item in items:
+        normalized = re.sub(r"\s+", " ", sanitize_text(item.text)).strip().casefold()
+        if normalized:
+            grouped[normalized].append(item)
+
+    positive_likes = sorted(item.likes for item in items if item.likes > 0)
+    like_threshold = 0
+    if positive_likes:
+        like_threshold = positive_likes[min(len(positive_likes) - 1, int(len(positive_likes) * 0.9))]
+
+    candidates: list[tuple[int, int, int, str, list[str]]] = []
+    group_reasons: dict[str, list[str]] = {}
+    representatives: dict[str, ContentItem] = {}
+    for normalized, group in grouped.items():
+        representative = max(group, key=lambda row: (row.likes, len(row.text), -(row.id or 0)))
+        representatives[normalized] = representative
+        content = _clean_analysis_text(representative.text)
+        confidence = min(float(row.confidence or 0) for row in group)
+        positive_hits = sum(word in content for word in POSITIVE_WORDS)
+        negative_hits = sum(word in content for word in NEGATIVE_WORDS)
+        topics = {
+            topic
+            for row in group
+            for topic in topic_assignments.get(row.id, [])
+        }
+        reasons: list[str] = []
+        score = 0
+        if confidence < confidence_threshold:
+            reasons.append("low_confidence")
+            score += 6
+        if positive_hits and negative_hits:
+            reasons.append("sentiment_conflict")
+            score += 7
+        if LIGHTWEIGHT_COMPLEXITY.search(content) and len(content) >= 16:
+            reasons.append("complex_context")
+            score += 4
+        if len(content) >= 120:
+            reasons.append("long_text")
+            score += 3
+        if like_threshold and representative.likes >= like_threshold:
+            reasons.append("high_engagement")
+            score += 5
+        if len(topics) >= 2:
+            reasons.append("multi_topic")
+            score += 3
+        if representative.platform == "taptap" and representative.rating:
+            rating_sentiment = (
+                "positive"
+                if representative.rating >= 4
+                else "neutral"
+                if representative.rating == 3
+                else "negative"
+            )
+            if representative.sentiment != rating_sentiment:
+                reasons.append("rating_disagreement")
+                score += 6
+        if reasons:
+            group_reasons[normalized] = reasons
+            candidates.append(
+                (score, representative.likes, len(content), normalized, reasons)
+            )
+
+    # Small datasets are reviewed in full. Above the configured floor, the
+    # routing budget grows with the dataset instead of becoming a fixed cap.
+    unique_limit = min(
+        len(grouped),
+        max(min_items, math.floor(len(grouped) * max_ratio)),
+    )
+    candidates.sort(key=lambda row: (row[0], row[1], row[2], row[3]), reverse=True)
+    audit_target = max(1, round(unique_limit * 0.35)) if unique_limit >= 4 else 0
+    audit_strata: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    for normalized, representative in representatives.items():
+        if representative.platform == "bilibili":
+            audit_strata[
+                (
+                    representative.source_scope,
+                    representative.kind,
+                    representative.sentiment or "neutral",
+                )
+            ].append(normalized)
+    for keys in audit_strata.values():
+        keys.sort(key=lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest())
+    audit_keys: list[str] = []
+    offsets = {key: 0 for key in audit_strata}
+    while len(audit_keys) < min(audit_target, sum(map(len, audit_strata.values()))):
+        advanced = False
+        for stratum in sorted(audit_strata):
+            offset = offsets[stratum]
+            if offset < len(audit_strata[stratum]):
+                audit_keys.append(audit_strata[stratum][offset])
+                offsets[stratum] += 1
+                advanced = True
+                if len(audit_keys) >= audit_target:
+                    break
+        if not advanced:
+            break
+    selected_keys = list(audit_keys)
+    for row in candidates:
+        if len(selected_keys) >= unique_limit:
+            break
+        if row[3] not in selected_keys:
+            selected_keys.append(row[3])
+    if len(selected_keys) < unique_limit:
+        remaining = sorted(
+            (key for key in grouped if key not in selected_keys),
+            key=lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest(),
+        )
+        budget_keys = remaining[: unique_limit - len(selected_keys)]
+        selected_keys.extend(budget_keys)
+        for key in budget_keys:
+            group_reasons.setdefault(key, []).append("budget_fill")
+    for key in audit_keys:
+        group_reasons.setdefault(key, []).append("calibration_sample")
+    selected = [item for key in selected_keys for item in grouped[key]]
+    reasons_by_id = {
+        item.id: group_reasons[key]
+        for key in selected_keys
+        for item in grouped[key]
+    }
+    return selected, reasons_by_id, len(grouped)
+
+
+def _build_sentiment_calibration(
+    items: list[ContentItem],
+    labels: dict[int, Any],
+    model_predictions: dict[int, str],
+    route_reasons: dict[int, list[str]],
+) -> dict[str, Any] | None:
+    stratum_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    local_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    seen: set[str] = set()
+    for item in items:
+        if "calibration_sample" not in route_reasons.get(item.id, []):
+            continue
+        label = labels.get(item.id)
+        if not label:
+            continue
+        normalized = re.sub(r"\s+", " ", sanitize_text(item.text)).strip().casefold()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        local_sentiment = model_predictions.get(item.id, "neutral")
+        llm_sentiment = str(label.sentiment)
+        if local_sentiment not in SENTIMENTS or llm_sentiment not in SENTIMENTS:
+            continue
+        stratum = "|".join((item.source_scope, item.kind, local_sentiment))
+        stratum_counts[stratum][llm_sentiment] += 1
+        local_counts[local_sentiment][llm_sentiment] += 1
+    if len(seen) < 30:
+        return None
+
+    def probabilities(counts: Counter[str], prior: dict[str, float] | None = None) -> dict[str, float]:
+        prior_weight = 5.0 if prior else 1.5
+        denominator = sum(counts.values()) + prior_weight
+        return {
+            key: round(
+                (counts[key] + (prior.get(key, 0.0) * prior_weight if prior else 0.5))
+                / denominator,
+                6,
+            )
+            for key in SENTIMENTS
+        }
+
+    local_rows = {
+        local: {
+            "sample_size": sum(counts.values()),
+            "probabilities": probabilities(counts),
+        }
+        for local, counts in local_counts.items()
+        if sum(counts.values()) >= 8
+    }
+    strata_rows: dict[str, dict[str, Any]] = {}
+    for stratum, counts in stratum_counts.items():
+        sample_size = sum(counts.values())
+        local_sentiment = stratum.rsplit("|", 1)[-1]
+        fallback = local_rows.get(local_sentiment)
+        fallback_probabilities = fallback.get("probabilities") if fallback else None
+        if sample_size >= 4 and isinstance(fallback_probabilities, dict):
+            prior = {
+                key: float(fallback_probabilities.get(key, 0.0))
+                for key in SENTIMENTS
+            }
+            strata_rows[stratum] = {
+                "sample_size": sample_size,
+                "probabilities": probabilities(counts, prior),
+            }
+    if not local_rows:
+        return None
+    return {
+        "method": "stratified_confusion_poststratification_v1",
+        "sample_size": len(seen),
+        "strata": strata_rows,
+        "local": local_rows,
+    }
 
 
 def _extract_topics(
@@ -477,30 +766,67 @@ async def analyze_job(
     topic_assignments = _rule_topic_assignments(items)
     llm_engine: LLMAnalyzer | None = None
     llm_result = None
+    sentiment_calibration: dict[str, Any] | None = None
+    analysis_mode = _normalized_analysis_mode(job.analysis_mode)
     analysis_meta: dict[str, Any] = {
-        "mode": job.analysis_mode,
+        "mode": analysis_mode,
         "sentiment_source": "local_model_calibrated",
         "local_model": settings.local_model_id,
         "local_model_revision": settings.local_model_revision,
     }
-    if job.analysis_mode == "enhanced":
+    for item in items:
+        item.raw_meta = {
+            **(item.raw_meta or {}),
+            "analysis": {
+                "source": "local",
+                "model": settings.local_model_id,
+                "model_revision": settings.local_model_revision,
+                "local_sentiment": item.sentiment,
+                "local_confidence": item.confidence,
+                "route": "local_only" if analysis_mode == "local" else "local_fast_path",
+                "topics": topic_assignments.get(item.id, []),
+            },
+        }
+
+    if job.analysis_mode in LLM_MODES:
         llm_engine = LLMAnalyzer(settings)
+
+        route_reasons: dict[int, list[str]]
+        unique_input_total = len(
+            {
+                re.sub(r"\s+", " ", sanitize_text(item.text)).strip().casefold()
+                for item in items
+                if sanitize_text(item.text).strip()
+            }
+        )
+        if analysis_mode == "lightweight":
+            llm_items, route_reasons, unique_input_total = _lightweight_llm_selection(
+                items,
+                topic_assignments,
+                min_items=settings.llm_lightweight_min_items,
+                max_ratio=settings.llm_lightweight_max_ratio,
+                confidence_threshold=settings.llm_lightweight_confidence_threshold,
+            )
+        else:
+            llm_items = items
+            route_reasons = {item.id: ["full_mode"] for item in items}
 
         async def report_batch_progress(done: int, total: int) -> None:
             if is_cancelled and await is_cancelled():
                 raise AnalysisCancelled("analysis cancelled")
             if analysis_progress:
                 percentage = 92 + round(done / max(1, total) * 4)
-                await analysis_progress(percentage, f"GPT-5.6 正在复核文本 {done}/{total}")
+                label = "轻量复核" if analysis_mode == "lightweight" else "全量复核"
+                await analysis_progress(percentage, f"GPT-5.6 {label}文本 {done}/{total}")
 
         llm_result = await llm_engine.classify(
-            items,
+            llm_items,
             keyword=job.keyword,
             progress=report_batch_progress,
         )
         warnings.extend(llm_result.warnings)
         agreement = 0
-        for item in items:
+        for item in llm_items:
             label = llm_result.labels.get(item.id)
             if not label:
                 continue
@@ -510,29 +836,67 @@ async def analyze_job(
             item.confidence = label.confidence
             # An empty semantic topic is meaningful: it clears false-positive
             # keyword matches made by the deterministic fallback.
-            topic_assignments[item.id] = label.topics
+            topic_assignments[item.id] = _validated_llm_topics(item.text, label.topics)
             item.raw_meta = {
                 **(item.raw_meta or {}),
                 "analysis": {
+                    **dict((item.raw_meta or {}).get("analysis") or {}),
                     "source": "llm",
                     "model": llm_engine.model,
                     "prompt_version": PROMPT_VERSION,
+                    "route": analysis_mode,
+                    "route_reasons": route_reasons.get(item.id, []),
                     "topics": topic_assignments.get(item.id, []),
                 },
             }
         covered = len(llm_result.labels)
         coverage = covered / max(1, len(items))
-        if covered < len(items):
+        routed_count = len(llm_items)
+        row_route_ratio = routed_count / max(1, len(items))
+        route_ratio = llm_result.unique_input_count / max(1, unique_input_total)
+        success_rate = covered / max(1, routed_count)
+        if covered < routed_count:
             warnings.append(
-                f"GPT-5.6 覆盖 {covered}/{len(items)} 条，其余使用校准后的本地模型"
+                f"GPT-5.6 成功返回 {covered}/{routed_count} 条送审文本，其余使用校准后的本地模型"
+            )
+        reason_counts = Counter(
+            reason for reasons in route_reasons.values() for reason in reasons
+        )
+        calibration_unique_count = len(
+            {
+                re.sub(r"\s+", " ", sanitize_text(item.text)).strip().casefold()
+                for item in llm_items
+                if "calibration_sample" in route_reasons.get(item.id, [])
+            }
+        )
+        if analysis_mode == "lightweight":
+            sentiment_calibration = _build_sentiment_calibration(
+                llm_items,
+                llm_result.labels,
+                model_predictions,
+                route_reasons,
             )
         analysis_meta.update(
             {
-                "sentiment_source": "gpt-5.6_with_local_fallback",
+                "sentiment_source": (
+                    "lightweight_llm_routing_with_local"
+                    if analysis_mode == "lightweight"
+                    else "full_llm_with_local_fallback"
+                ),
                 "llm_model": llm_engine.model,
                 "prompt_version": PROMPT_VERSION,
                 "llm_coverage": round(coverage, 4),
                 "llm_covered_count": covered,
+                "llm_routed_count": routed_count,
+                "llm_route_ratio": round(route_ratio, 4),
+                "llm_row_route_ratio": round(row_route_ratio, 4),
+                "llm_success_rate": round(success_rate, 4),
+                "llm_route_reasons": dict(sorted(reason_counts.items())),
+                "llm_calibration_unique_count": calibration_unique_count,
+                "llm_targeted_unique_count": max(
+                    0, llm_result.unique_input_count - calibration_unique_count
+                ),
+                "llm_total_unique_input_count": unique_input_total,
                 "llm_unique_input_count": llm_result.unique_input_count,
                 "llm_batch_count": llm_result.batch_count,
                 "local_llm_agreement": round(agreement / max(1, covered), 4),
@@ -540,6 +904,15 @@ async def analyze_job(
                 "completion_tokens": llm_result.completion_tokens,
             }
         )
+        if sentiment_calibration:
+            analysis_meta.update(
+                {
+                    "sentiment_estimation": sentiment_calibration["method"],
+                    "sentiment_calibration_sample_size": sentiment_calibration[
+                        "sample_size"
+                    ],
+                }
+            )
 
     for item in items:
         if item.platform == "taptap" and item.rating:
@@ -570,14 +943,21 @@ async def analyze_job(
 
     def bili_section_distribution(section_items: list[ContentItem]) -> dict[str, Any]:
         return _blend_bilibili(
-            _distribution([item for item in section_items if item.kind == "comment"]),
-            _distribution([item for item in section_items if item.kind == "danmaku"]),
+            _distribution(
+                [item for item in section_items if item.kind == "comment"],
+                sentiment_calibration,
+            ),
+            _distribution(
+                [item for item in section_items if item.kind == "danmaku"],
+                sentiment_calibration,
+            ),
         )
 
     official_distribution = bili_section_distribution(official_items)
     discovery_distribution = bili_section_distribution(discovery_items)
     bili_overall_distribution = _blend_bilibili(
-        _distribution(comments), _distribution(danmakus)
+        _distribution(comments, sentiment_calibration),
+        _distribution(danmakus, sentiment_calibration),
     )
     taptap_distribution = _distribution(reviews)
     available = [
@@ -585,17 +965,23 @@ async def analyze_job(
         for entry in (bili_overall_distribution, taptap_distribution)
         if entry["total"]
     ]
+    overall_values = {
+        key: sum(entry["items"][index]["percentage"] for entry in available)
+        / max(1, len(available))
+        for index, key in enumerate(SENTIMENTS)
+    }
+    overall_tenths = _rounded_parts(overall_values, 1000) if available else {key: 0 for key in SENTIMENTS}
     overall_items = []
     for index, key in enumerate(SENTIMENTS):
-        percentage = sum(entry["items"][index]["percentage"] for entry in available) / max(1, len(available))
         overall_items.append(
-            {"name": key, "label": SENTIMENT_CN[key], "percentage": round(percentage, 1), "count": sum(entry["items"][index]["count"] for entry in available)}
+            {"name": key, "label": SENTIMENT_CN[key], "percentage": overall_tenths[key] / 10, "count": sum(entry["items"][index]["count"] for entry in available)}
         )
     overall = {
         "total": sum(entry["total"] for entry in available),
         "available": bool(available),
         "items": overall_items,
         "platform_equal_weight": True,
+        "estimated": any(bool(entry.get("estimated")) for entry in available),
     }
     keywords = _extract_keywords(items, job.keyword)
     topics = _extract_topics(items, topic_assignments)
@@ -790,7 +1176,7 @@ async def analyze_job(
         "collection": job.collection_metrics or {},
     }
     ai_analysis: dict[str, Any] | None = None
-    if job.analysis_mode == "enhanced" and llm_engine is not None:
+    if analysis_mode in {"lightweight", "full"} and llm_engine is not None:
         if is_cancelled and await is_cancelled():
             raise AnalysisCancelled("analysis cancelled")
         if analysis_progress:
@@ -949,8 +1335,12 @@ async def analyze_job(
             "bilibili_discovery": "关键词相关视频按互动权重采样；与官号 BVID 去重后分析",
             "bilibili": "登录用户可见网页低频采集；评论 80%、可见弹幕 20% 加权",
             "taptap": "公开网页评价；4-5星正面、3星中性、1-2星负面",
-            "analysis": "增强模式由 GPT-5.6 全量分批标注，确定性代码聚合固定业务议题与风险分；失败批次回退校准后的本地模型"
-            if job.analysis_mode == "enhanced"
+            "analysis": (
+                f"轻量 LLM 模式先由本地模型全量分类；去重样本不超过 {settings.llm_lightweight_min_items} 条时全部送审，更多样本的送审预算取 {settings.llm_lightweight_min_items} 条与 {settings.llm_lightweight_max_ratio:.0%} 之较大值；未送审部分使用分层审计混淆矩阵校准聚合情感占比"
+                if analysis_mode == "lightweight"
+                else "全量 LLM 模式由 GPT-5.6 对去重文本并发分批标注；失败批次回退校准后的本地模型"
+            )
+            if analysis_mode in {"lightweight", "full"}
             else "校准后的本地三分类模型；低置信度、纯表情、事实回复与无主导混合表达归为中性",
             "combined": "平台等权平均；风险分用于样本内运营排序，不等同于真实用户负面概率；不绕过验证码或风控",
         },

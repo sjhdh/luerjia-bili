@@ -322,19 +322,36 @@ def parse_taptap_search_html(html: str, limit: int = 8) -> list[CollectedApp]:
         if not match or match.group(1) in seen:
             continue
         app_id = match.group(1)
-        card = link.find_parent(["article", "div", "li"]) or link
-        title_node = card.select_one("h2, h3, [class*=title]")
-        title = _text(title_node) or str(link.get("title") or "") or _text(link)
+        card = (
+            link.find_parent(attrs={"itemprop": "MobileApplication"})
+            or link.find_parent(class_=re.compile(r"^search-list-item-app(?:-box)?$"))
+            or link.find_parent(["article", "li"])
+            or link
+        )
+        title_meta = card.select_one('meta[itemprop="name"][content]')
+        title_node = card.select_one(
+            '[itemprop="name"]:not(meta), .text-with-tags .text, '
+            ".text-wrapper .tap-text, h2, h3, [class*=title]"
+        )
+        title = (
+            (str(title_meta.get("content") or "") if title_meta else "")
+            or _text(title_node)
+            or str(link.get("title") or "")
+            or _text(link)
+        )
         if not title:
             continue
         image = card.select_one("img")
         cover = str(image.get("src") or image.get("data-src") or "") if image else None
+        score_node = card.select_one(".tap-rating__number, [class*=rating__number]")
+        score_match = re.search(r"(10|[0-9](?:\.[0-9])?)", _text(score_node))
         results.append(
             CollectedApp(
                 external_id=app_id,
                 title=title,
-                url=urljoin(TAPTAP_BASE, href),
+                url=f"{TAPTAP_BASE}/app/{app_id}",
                 cover_url=cover,
+                score=float(score_match.group(1)) if score_match else None,
             )
         )
         seen.add(app_id)
@@ -349,15 +366,20 @@ def parse_taptap_app_html(html: str, seed: CollectedApp) -> CollectedApp:
     title = re.sub(r"\s+-\s+(?:安卓|iOS|游戏评价|官方).*?(?:TapTap)?$", "", title).strip()
     cover = _meta(soup, "og:image") or seed.cover_url
     body = _text(soup)
-    score_node = soup.select_one(".app-reviews__score-wrap, [class*=score-wrap], [class*=score-value]")
+    score_node = soup.select_one(
+        ".app-info-board__score, .app-info-board__rating, "
+        ".app-reviews__score-wrap, [class*=score-wrap], [class*=score-value]"
+    )
     score_match = re.search(
-        r"([0-9](?:\.[0-9])?)",
+        r"(10|[0-9](?:\.[0-9])?)",
         _text(score_node),
-    ) or re.search(r"(?:评分|TapTap)\s*([0-9](?:\.[0-9])?)", body)
+    ) or re.search(r"(?:评分|TapTap)\s*(10|[0-9](?:\.[0-9])?)", body)
     score = float(score_match.group(1)) if score_match else seed.score
-    rating_match = re.search(
-        r"([\d.]+\s*[万亿]?)\s*(?:个|条)?(?:评价|评分)",
-        _text(score_node),
+    rating_node = soup.select_one(".app-review__header-count, [class*=review-count]")
+    rating_match = (
+        re.search(r"([\d.]+\s*[万亿]?)\s*(?:个|条)?", _text(rating_node))
+        if rating_node
+        else None
     ) or re.search(r"([\d.]+\s*[万亿]?)\s*(?:个|条)?(?:评价|评分)", body)
     rating_count = parse_human_count(rating_match.group(1)) if rating_match else 0
     tags: list[dict[str, int | str]] = []

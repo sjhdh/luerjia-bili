@@ -49,6 +49,38 @@ class TapTapVisibleSource:
         *,
         selected_app_url: str | None = None,
     ) -> CollectionResult:
+        _enabled, rotation_limit = self.manager.proxy.risk_rotation_policy()
+        for attempt in range(rotation_limit + 1):
+            try:
+                return await self._collect_once(
+                    keyword,
+                    depth,
+                    selected_app_id,
+                    progress,
+                    is_cancelled,
+                    selected_app_url=selected_app_url,
+                )
+            except SourcePaused:
+                proxy = await self.manager.recover_taptap_risk(attempt)
+                if not proxy:
+                    raise
+                await progress(
+                    "TapTap 风控换线",
+                    91,
+                    f"检测到验证页，已自动切换节点并重试（{attempt + 1}/{rotation_limit}）",
+                )
+        raise SourcePaused("TapTap 自动换线次数已用完，请在页面子窗口完成验证")
+
+    async def _collect_once(
+        self,
+        keyword: str,
+        depth: str,
+        selected_app_id: str | None,
+        progress: ProgressCallback,
+        is_cancelled: CancelCallback,
+        *,
+        selected_app_url: str | None = None,
+    ) -> CollectionResult:
         review_limit = REVIEW_LIMITS.get(depth, REVIEW_LIMITS["standard"])
         context = await self.manager.connect(open_login=False, platform="taptap")
         page = await context.new_page()
@@ -63,12 +95,23 @@ class TapTapVisibleSource:
                 )
             else:
                 candidates: list[CollectedApp] = []
+                await page.goto(
+                    "https://www.taptap.cn/",
+                    wait_until="domcontentloaded",
+                    timeout=45_000,
+                )
+                await self._check_page(page)
+                await page.wait_for_timeout(1_000)
                 for search_url in (
                     f"https://www.taptap.cn/search/{quote(keyword)}",
                     f"https://www.taptap.cn/search?kw={quote(keyword)}",
                 ):
                     await page.goto(search_url, wait_until="domcontentloaded", timeout=45_000)
                     await self._check_page(page)
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=10_000)
+                    except Exception:
+                        pass
                     await page.wait_for_timeout(1_200)
                     candidates = parse_taptap_search_html(await page.content())
                     if candidates:
@@ -125,26 +168,18 @@ class TapTapVisibleSource:
             await self._check_page(page)
             unique: dict[str, CollectedContent] = {}
             stable = 0
-            for _ in range(max(20, min(160, review_limit // 6 + 20))):
+            for iteration in range(max(20, min(160, review_limit // 6 + 20))):
                 if await is_cancelled():
                     break
+                if iteration % 5 == 0:
+                    await self._check_page(page)
                 before = len(unique)
                 for review in parse_taptap_reviews_html(await page.content(), app.external_id):
                     unique[review.external_id] = review
                 if len(unique) >= review_limit:
                     break
-                next_button = page.locator(".app-reviews__next").first
-                clicked = False
-                if await next_button.count():
-                    try:
-                        await next_button.click(timeout=3_000)
-                        await page.wait_for_timeout(1_600)
-                        clicked = True
-                    except Exception:
-                        pass
-                if not clicked:
-                    await page.mouse.wheel(0, 1300)
-                    await asyncio.sleep(random.uniform(0.6, 1.0))
+                await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+                await asyncio.sleep(random.uniform(1.1, 1.6))
                 stable = stable + 1 if len(unique) == before else 0
                 if stable >= 6:
                     break

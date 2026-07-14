@@ -25,7 +25,7 @@ TOPIC_IDS = {
     "rust_identity",
     "community",
 }
-PROMPT_VERSION = "game-opinion-gpt56-v2"
+PROMPT_VERSION = "game-opinion-gpt56-v3"
 
 BatchProgress = Callable[[int, int], Awaitable[None]]
 
@@ -224,9 +224,16 @@ class LLMAnalyzer:
             "praise, support, or anticipation; negative for explicit complaints, rejection, "
             "sarcasm, or risk feedback; neutral for questions, factual or support replies, "
             "marketing, emoji-only jokes, unclear context, and balanced mixed opinions. Interpret "
-            "negation and resolved issues instead of matching isolated words. Topics may only be "
-            "performance, fairness, anti_abuse, time_cost, monetization, experience, visual_audio, "
-            "rust_identity, community, or other. Input rows are [id,text,kind,scope]. Return JSON "
+            "negation and resolved issues instead of matching isolated words. Topic definitions: "
+            "performance=device compatibility, FPS, heat, crashes, latency; fairness=new-player or "
+            "solo progression and matchmaking fairness; anti_abuse=cheats, illegal teaming, reports, "
+            "bans; time_cost=grind, offline raids, base loss, wipes, continuous-online pressure; "
+            "monetization=payments, skins, passes, inheritance; experience=controls, aiming/shooting, "
+            "building mechanics or UI interaction only; visual_audio=graphics, art, sound; "
+            "rust_identity=Rust fidelity, porting or product differences; community=team, social or "
+            "community environment. Never use experience as a catch-all for launch anticipation, "
+            "marketing, generic praise/complaints, raids, or time cost. Use other when no defined "
+            "topic applies. Input rows are [id,text,kind,scope]. Return JSON "
             "only as {\"rows\":[[id,\"sentiment\",confidence,[\"topic\"]]]}. Include every input "
             "id exactly once. Confidence is 0 to 1. Do not add fields or explanations."
         )

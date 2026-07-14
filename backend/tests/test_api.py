@@ -75,7 +75,7 @@ def test_proxy_configuration_api(monkeypatch) -> None:
     async def configure_proxy(**_values) -> dict[str, object]:
         return state
 
-    async def test_proxy(_value, _protocol) -> ProxyCheck:
+    async def test_proxy(_value, _protocol, **_kwargs) -> ProxyCheck:
         return ProxyCheck(
             proxy="http://192.0.2.20:8080",
             reachable=True,
@@ -149,10 +149,10 @@ async def test_reanalysis_reuses_collected_content_without_recollection(monkeypa
 
         response = client.post(
             "/api/v1/jobs/reanalyze-existing-job/reanalyze",
-            json={"analysis_mode": "enhanced"},
+            json={"analysis_mode": "full"},
         )
         assert response.status_code == 200
-        assert response.json()["analysis_mode"] == "enhanced"
+        assert response.json()["analysis_mode"] == "full"
         assert response.json()["progress"] == 90
         assert response.json()["collection_metrics"]["analysis_only"] is True
         assert ("reanalyze-existing-job", True) in queued

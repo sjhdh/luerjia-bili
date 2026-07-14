@@ -53,7 +53,7 @@ class Job(Base):
     stage: Mapped[str] = mapped_column(String(80), default="等待开始")
     progress: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(Text, default="")
-    analysis_mode: Mapped[str] = mapped_column(String(20), default="local")
+    analysis_mode: Mapped[str] = mapped_column(String(20), default="lightweight")
     time_range: Mapped[str] = mapped_column(String(20), default="90d")
     depth: Mapped[str] = mapped_column(String(20), default="standard")
     official_bilibili_url: Mapped[str | None] = mapped_column(Text, nullable=True)

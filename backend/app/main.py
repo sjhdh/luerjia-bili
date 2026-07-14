@@ -324,7 +324,12 @@ async def rotate_proxy(session: AsyncSession = Depends(get_session)) -> dict[str
 @app.post("/api/v1/proxy/test", response_model=ProxyCheckRead)
 async def test_proxy(payload: ProxyTestRequest) -> ProxyCheckRead:
     try:
-        result = await browser.test_proxy(payload.proxy, payload.protocol)
+        result = await browser.test_proxy(
+            payload.proxy,
+            payload.protocol,
+            allow_tls_interception=payload.allow_tls_interception,
+            platform_scope=payload.platform_scope,
+        )
     except ProxyConfigurationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ProxyCheckRead(**asdict(result))

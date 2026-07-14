@@ -1,4 +1,4 @@
-import type { AuthSession, BrowserSession, Job, ProxyCheck, ProxySettings, ReportPayload, ShareLink } from "./types";
+import type { AnalysisMode, AuthSession, BrowserSession, Job, ProxyCheck, ProxySettings, ReportPayload, ShareLink } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -28,7 +28,7 @@ export const api = {
   cancelJob: (id: string) => request<Job>(`/api/v1/jobs/${id}/cancel`, { method: "POST" }),
   retryJob: (id: string) => request<Job>(`/api/v1/jobs/${id}/retry`, { method: "POST" }),
   rerunJob: (id: string) => request<Job>(`/api/v1/jobs/${id}/rerun`, { method: "POST" }),
-  reanalyzeJob: (id: string, analysisMode: "local" | "enhanced" = "enhanced") =>
+  reanalyzeJob: (id: string, analysisMode: AnalysisMode = "lightweight") =>
     request<Job>(`/api/v1/jobs/${id}/reanalyze`, {
       method: "POST",
       body: JSON.stringify({ analysis_mode: analysisMode })
@@ -50,13 +50,13 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   proxySettings: () => request<ProxySettings>("/api/v1/proxy"),
-  updateProxy: (payload: Pick<ProxySettings, "mode" | "protocol" | "country_code" | "pool_size" | "manual_proxy">) =>
+  updateProxy: (payload: Pick<ProxySettings, "mode" | "protocol" | "country_code" | "pool_size" | "manual_proxy" | "pool_provider" | "platform_scope" | "allow_tls_interception" | "auto_rotate_on_risk" | "risk_rotation_limit" | "zdopen_app_id"> & { zdopen_akey: string }) =>
     request<ProxySettings>("/api/v1/proxy", { method: "PUT", body: JSON.stringify(payload) }),
   rotateProxy: () => request<ProxySettings>("/api/v1/proxy/rotate", { method: "POST" }),
-  testProxy: (proxy: string | null, protocol: ProxySettings["protocol"] | null) =>
+  testProxy: (proxy: string | null, protocol: ProxySettings["protocol"] | null, allowTlsInterception = false, platformScope: ProxySettings["platform_scope"] = "taptap") =>
     request<ProxyCheck>("/api/v1/proxy/test", {
       method: "POST",
-      body: JSON.stringify({ proxy, protocol })
+      body: JSON.stringify({ proxy, protocol, allow_tls_interception: allowTlsInterception, platform_scope: platformScope })
     }),
   report: (id: string) => request<ReportPayload>(`/api/v1/reports/${id}`),
   sharedReport: (token: string) => request<ReportPayload>(`/api/v1/shared/reports/${token}`),
