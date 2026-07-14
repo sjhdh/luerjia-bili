@@ -5,7 +5,8 @@ import difflib
 import random
 from urllib.parse import quote
 
-from playwright.async_api import Page
+from playwright.async_api import Page, Response
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from ..config import Settings
 from .base import (
@@ -23,6 +24,13 @@ from .parsers import parse_taptap_app_html, parse_taptap_reviews_html, parse_tap
 REVIEW_LIMITS = {"light": 100, "standard": 200, "deep": 500}
 
 
+class TapTapNavigationError(RuntimeError):
+    def __init__(self, stage: str, detail: str, *, retryable: bool) -> None:
+        super().__init__(f"{stage}：{detail}")
+        self.stage = stage
+        self.retryable = retryable
+
+
 class TapTapVisibleSource:
     def __init__(self, settings: Settings, manager: BilibiliBrowserManager) -> None:
         self.settings = settings
@@ -38,6 +46,34 @@ class TapTapVisibleSource:
         ):
             await self.manager.adopt_page("taptap", page, risk_detected=True)
             raise SourcePaused("TapTap 触发验证，请在页面子窗口完成处理后点击重试")
+
+    async def _navigate(self, page: Page, url: str, stage: str) -> Response | None:
+        try:
+            response = await page.goto(
+                url,
+                wait_until="commit",
+                timeout=30_000,
+            )
+        except PlaywrightTimeoutError as exc:
+            raise TapTapNavigationError(stage, "连接超时", retryable=True) from exc
+        if response and response.status >= 400:
+            retryable = response.status in {408, 425, 429} or response.status >= 500
+            raise TapTapNavigationError(
+                stage,
+                f"页面返回 HTTP {response.status}",
+                retryable=retryable,
+            )
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=12_000)
+        except PlaywrightTimeoutError:
+            # Some TapTap pages keep third-party resources pending after the usable
+            # document has committed. The attached body is the reliable boundary.
+            pass
+        try:
+            await page.locator("body").wait_for(state="attached", timeout=8_000)
+        except PlaywrightTimeoutError as exc:
+            raise TapTapNavigationError(stage, "页面主体未加载", retryable=True) from exc
+        return response
 
     async def collect(
         self,
@@ -69,6 +105,18 @@ class TapTapVisibleSource:
                     91,
                     f"检测到验证页，已自动切换节点并重试（{attempt + 1}/{rotation_limit}）",
                 )
+            except TapTapNavigationError as exc:
+                proxy = await self.manager.recover_taptap_risk(
+                    attempt,
+                    route_failure=exc.retryable,
+                )
+                if not proxy:
+                    raise
+                await progress(
+                    "TapTap 访问换线",
+                    91,
+                    f"{exc.stage}失败，已自动切换节点并重试（{attempt + 1}/{rotation_limit}）",
+                )
         raise SourcePaused("TapTap 自动换线次数已用完，请在页面子窗口完成验证")
 
     async def _collect_once(
@@ -95,18 +143,14 @@ class TapTapVisibleSource:
                 )
             else:
                 candidates: list[CollectedApp] = []
-                await page.goto(
-                    "https://www.taptap.cn/",
-                    wait_until="domcontentloaded",
-                    timeout=45_000,
-                )
+                await self._navigate(page, "https://www.taptap.cn/", "打开 TapTap 首页")
                 await self._check_page(page)
                 await page.wait_for_timeout(1_000)
                 for search_url in (
                     f"https://www.taptap.cn/search/{quote(keyword)}",
                     f"https://www.taptap.cn/search?kw={quote(keyword)}",
                 ):
-                    await page.goto(search_url, wait_until="domcontentloaded", timeout=45_000)
+                    await self._navigate(page, search_url, "搜索 TapTap 应用")
                     await self._check_page(page)
                     try:
                         await page.wait_for_load_state("networkidle", timeout=10_000)
@@ -155,15 +199,15 @@ class TapTapVisibleSource:
                         ]
                     )
 
-            await page.goto(seed.url, wait_until="domcontentloaded", timeout=45_000)
+            await self._navigate(page, seed.url, "打开 TapTap 应用页")
             await self._check_page(page)
             await page.wait_for_timeout(900)
             app = parse_taptap_app_html(await page.content(), seed)
             await progress("采集 TapTap 评价", 94, f"{app.title} · 目标 {review_limit} 条")
-            await page.goto(
+            await self._navigate(
+                page,
                 f"https://www.taptap.cn/app/{app.external_id}/review",
-                wait_until="domcontentloaded",
-                timeout=45_000,
+                "打开 TapTap 评价页",
             )
             await self._check_page(page)
             unique: dict[str, CollectedContent] = {}

@@ -11,6 +11,7 @@ from backend.app.services.proxy import (
     ProxyConfigurationError,
     ProxyManager,
     ProxyUnavailableError,
+    target_status_available,
 )
 
 
@@ -35,6 +36,13 @@ def test_proxy_address_normalization_is_strict() -> None:
         ProxyManager.normalize_proxy("http://proxy.example:8080/path", "http")
     with pytest.raises(ProxyConfigurationError, match="端口"):
         ProxyManager.normalize_proxy("http://proxy.example:99999", "http")
+
+
+def test_target_probe_rejects_method_and_block_pages() -> None:
+    assert target_status_available(200) is True
+    assert target_status_available(302) is True
+    assert target_status_available(405) is False
+    assert target_status_available(429) is False
 
 
 async def test_manual_proxy_is_checked_and_persisted(tmp_path: Path, monkeypatch) -> None:

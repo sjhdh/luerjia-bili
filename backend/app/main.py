@@ -337,11 +337,7 @@ async def test_proxy(payload: ProxyTestRequest) -> ProxyCheckRead:
 
 @app.post("/api/v1/jobs", response_model=JobRead, status_code=201)
 async def create_job(payload: JobCreate, session: AsyncSession = Depends(get_session)) -> Job:
-    active = await session.scalar(
-        select(Job.id).where(Job.status.in_([status.value for status in ACTIVE_JOB_STATUSES]))
-    )
-    if active:
-        raise HTTPException(status_code=409, detail="当前已有任务运行，请等待完成或先取消")
+    await _ensure_no_active_job(session)
     job = Job(**payload.model_dump())
     session.add(job)
     await session.commit()
@@ -440,6 +436,20 @@ async def _clear_job_results(job_id: str, session: AsyncSession) -> None:
     await session.execute(delete(Report).where(Report.job_id == job_id))
 
 
+async def _ensure_no_active_job(
+    session: AsyncSession,
+    *,
+    exclude_job_id: str | None = None,
+) -> None:
+    query = select(Job.id).where(
+        Job.status.in_([status.value for status in ACTIVE_JOB_STATUSES])
+    )
+    if exclude_job_id:
+        query = query.where(Job.id != exclude_job_id)
+    if await session.scalar(query):
+        raise HTTPException(status_code=409, detail="当前已有任务运行，请等待完成或先取消")
+
+
 @app.post("/api/v1/jobs/{job_id}/retry", response_model=JobRead)
 async def retry_job(job_id: str, session: AsyncSession = Depends(get_session)) -> Job:
     job = await session.get(Job, job_id)
@@ -447,15 +457,71 @@ async def retry_job(job_id: str, session: AsyncSession = Depends(get_session)) -
         raise HTTPException(status_code=404, detail="任务不存在")
     if job.status == JobStatus.AWAITING_TAPTAP_SELECTION.value:
         raise HTTPException(status_code=409, detail="请先选择 TapTap 应用")
+    await _ensure_no_active_job(session, exclude_job_id=job_id)
+    total_content_count = int(
+        await session.scalar(
+            select(func.count(ContentItem.id)).where(ContentItem.job_id == job_id)
+        )
+        or 0
+    )
+    discovery_content_count = int(
+        await session.scalar(
+            select(func.count(ContentItem.id)).where(
+                ContentItem.job_id == job_id,
+                ContentItem.source_scope == "bilibili_discovery",
+            )
+        )
+        or 0
+    )
+    taptap_content_count = int(
+        await session.scalar(
+            select(func.count(ContentItem.id)).where(
+                ContentItem.job_id == job_id,
+                ContentItem.source_scope == "taptap",
+            )
+        )
+        or 0
+    )
+    metrics = dict(job.collection_metrics or {})
+    official_metrics = ((metrics.get("bilibili") or {}).get("official") or {})
+    official_checkpoint = metrics.get("official_checkpoint") or {}
+    official_incomplete = bool(
+        job.official_mid
+        and (
+            (
+                official_metrics
+                and int(official_metrics.get("complete_videos", 0))
+                < int(official_metrics.get("collected_videos", 0))
+            )
+            or (official_checkpoint and not official_checkpoint.get("complete"))
+        )
+    )
+    discovery_incomplete = bool(
+        job.include_discovery
+        and discovery_content_count == 0
+    )
+    taptap_metrics = metrics.get("taptap") or {}
+    taptap_incomplete = bool(
+        job.include_taptap
+        and (
+            taptap_content_count == 0
+            or (
+                taptap_metrics.get("target_reviews")
+                and int(taptap_metrics.get("review_count", 0))
+                < int(taptap_metrics.get("target_reviews", 0))
+            )
+        )
+    )
     preserve_checkpoint = bool(
-        (job.collection_metrics or {}).get("analysis_only")
+        metrics.get("analysis_only")
         or
         job.status == JobStatus.AWAITING_LOGIN.value
+        or total_content_count
         or (
             job.official_mid
             and (
-                (job.collection_metrics or {}).get("official_checkpoint")
-                or (job.collection_metrics or {}).get("official_phase_complete")
+                metrics.get("official_checkpoint")
+                or metrics.get("official_phase_complete")
             )
         )
     )
@@ -466,7 +532,17 @@ async def retry_job(job_id: str, session: AsyncSession = Depends(get_session)) -
     job.progress = 0
     job.message = ""
     job.warnings = []
-    if not preserve_checkpoint:
+    if preserve_checkpoint:
+        if official_incomplete or discovery_incomplete:
+            metrics["bilibili_complete"] = False
+        if official_incomplete:
+            metrics["official_phase_complete"] = False
+        if discovery_incomplete:
+            metrics["discovery_phase_complete"] = False
+        if taptap_incomplete:
+            metrics["taptap_complete"] = False
+        job.collection_metrics = metrics
+    else:
         job.collection_metrics = {}
     job.partial = False
     job.cancel_requested = False
@@ -482,6 +558,7 @@ async def rerun_job(job_id: str, session: AsyncSession = Depends(get_session)) -
     source = await session.get(Job, job_id)
     if not source:
         raise HTTPException(status_code=404, detail="任务不存在")
+    await _ensure_no_active_job(session)
     clone = Job(
         keyword=source.keyword,
         time_range=source.time_range,
@@ -507,11 +584,7 @@ async def reanalyze_job(
     payload: ReanalysisRequest,
     session: AsyncSession = Depends(get_session),
 ) -> Job:
-    active = await session.scalar(
-        select(Job.id).where(Job.status.in_([status.value for status in ACTIVE_JOB_STATUSES]))
-    )
-    if active:
-        raise HTTPException(status_code=409, detail="当前已有任务运行，请等待完成或先取消")
+    await _ensure_no_active_job(session)
     job = await session.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
